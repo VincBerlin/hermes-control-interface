@@ -72,6 +72,7 @@ const els = {
   cronPanel: $('#cron-panel'),
   tokensPanel: $('#tokens-panel'),
   backgroundPanel: $('#background-panel'),
+  explorerPanel: $('#explorer-panel'),
   sprite: $('#agent-sprite'),
   agentStateLabel: $('#agent-state-label'),
   agentDetails: $('#agent-details'),
@@ -453,7 +454,7 @@ function renderSidebarAgent(snapshot) {
   const detailsText = `${label} • ${sessionCount} sessions`;
   if (els.sidebarAgentState) els.sidebarAgentState.textContent = stateText;
   if (els.sidebarAgentDetails) els.sidebarAgentDetails.textContent = detailsText;
-  drawSidebarSprite(normalized, a.frame || 0);
+  drawSidebarSprite(normalized, a.frame || 0, snapshot.avatar?.src);
 }
 
 const SIDEBAR_COLORS = {
@@ -463,7 +464,7 @@ const SIDEBAR_COLORS = {
   w: '#ffffff', d: '#9ca3af', '-': 'transparent',
 };
 
-function drawSidebarSprite(stateName, frameIdx) {
+function drawSidebarSprite(stateName, frameIdx, avatarSrc) {
   const canvas = els.sidebarAgentSprite;
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
@@ -475,6 +476,8 @@ function drawSidebarSprite(stateName, frameIdx) {
   canvas.height = ph * scale;
   ctx.fillStyle = 'transparent';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Draw sprite
   for (let row = 0; row < frame.length; row++) {
     const line = frame[row] || '';
     for (let col = 0; col < line.length; col++) {
@@ -484,6 +487,16 @@ function drawSidebarSprite(stateName, frameIdx) {
       ctx.fillStyle = color;
       ctx.fillRect(col * scale, row * scale, scale, scale);
     }
+  }
+
+  // Overlay custom avatar image on top of sprite
+  if (avatarSrc) {
+    const img = new Image();
+    img.onload = () => {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    };
+    img.src = avatarSrc;
   }
 }
 
@@ -1026,7 +1039,13 @@ function connectWs() {
   socket.addEventListener('message', (event) => {
     try {
       const data = JSON.parse(event.data);
-      if (data.type === 'snapshot') renderSnapshot(data.payload);
+      if (data.type === 'snapshot') {
+        // Merge: keep existing sessions data from polling, overwrite everything else
+        const prev = state.snapshot || {};
+        const incoming = data.payload || {};
+        state.snapshot = { ...incoming, sessions: prev.sessions || incoming.sessions || [] };
+        renderSnapshot(state.snapshot);
+      }
       if (data.type === 'terminal-transcript') {
         renderTerminalBuffer(data);
         state.lastTerminalBufferLength = String(data.buffer || '').length;

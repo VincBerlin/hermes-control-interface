@@ -744,29 +744,17 @@ function getModels() {
 }
 
 function buildKnowledgeMarkdown() {
-  const cfg = extractConfigSummary();
-  const skills = getSkills();
-  const models = getModels();
-  return [
-    '# Hermes Knowledge',
-    '',
-    '## Skills',
-    ...skills.slice(0, 30).map((s) => `- ${s}`),
-    '',
-    '## Models',
-    ...models.map((m) => `- ${m.label}: ${m.value}`),
-    '',
-    '## Hermes config',
-    `- default: ${cfg.defaultModel}`,
-    `- provider: ${cfg.provider}`,
-    `- fallback: ${cfg.fallbackProvider} / ${cfg.fallbackModel}`,
-    '',
-    '## Notes',
-    `- explorer defaults to ${PROJECTS_ROOT} and ${CONTROL_HOME}`,
-    '- directory clicks only expand and never attempt read',
-    '- file saves require explicit write action',
-    '- terminal panel runs the real `hermes` command',
-  ].join('\n');
+  try {
+    const raw = execFileSync('bash', ['-lc', 'timeout 8s hermes status 2>&1'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 32 * 1024,
+    });
+    const status = String(raw || '').replace(/\r?\n/g, '\n').trim();
+    return `## Hermes Status\n\`\`\`\n${status}\n\`\`\``;
+  } catch (error) {
+    return '## Hermes Status\n`hermes status` unavailable — is Hermes running?';
+  }
 }
 
 function buildSpriteState() {
