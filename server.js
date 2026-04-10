@@ -6,10 +6,23 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
-const { execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const rateLimit = require('express-rate-limit');
+const yaml = require('js-yaml');
+
+// Async shell execution utility (non-blocking)
+function shell(cmd, timeout = '8s') {
+  return new Promise((resolve) => {
+    execFile('bash', ['-lc', `timeout ${timeout} ${cmd} 2>&1`], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024,
+    }, (err, stdout) => {
+      resolve(err ? '' : stdout);
+    });
+  });
+}
 
 const PORT = Number(process.env.PORT || 10272);
 const CONTROL_PASSWORD = process.env.HERMES_CONTROL_PASSWORD;
@@ -549,20 +562,18 @@ function parseHermesCronList(raw) {
   return jobs;
 }
 
-function getCronJobs() {
+async function getCronJobs() {
   const now = Date.now();
   if (getCronJobs.cache && now - getCronJobs.cache.at < 10_000) return getCronJobs.cache.data;
-  try {
-    const raw = execFileSync('bash', ['-lc', 'timeout 8s hermes cron list 2>&1'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const raw = await shell('hermes cron list');
+  if (raw) {
     const data = parseHermesCronList(raw);
     getCronJobs.cache = { at: now, data };
     return data;
-  } catch (error) {
-    log('cron.list.error', error.message || 'failed to run hermes cron list');
-    // Preserve existing cache on error — don't clobber with empty fallback
-    if (getCronJobs.cache?.data?.length) {
-      return getCronJobs.cache.data;
-    }
+  }
+  // Preserve existing cache on error — don't clobber with empty fallback
+  if (getCronJobs.cache?.data?.length) {
+    return getCronJobs.cache.data;
   }
   const fallback = cronJobs.map((job) => ({
     ...job,
@@ -634,58 +645,55 @@ function maybeHandleSpecialTerminalCommand(command) {
   throw new Error(`unsupported cron action: ${action}`);
 }
 
-function getSessions() {
+async function getSessions() {
   const now = Date.now();
   if (hermesSidebarSessionsCache.data.length && now - hermesSidebarSessionsCache.at < 10_000) {
     return hermesSidebarSessionsCache.data;
   }
-
-  try {
-    const raw = execFileSync('bash', ['-lc', 'timeout 8s hermes sessions list --limit 10 2>&1'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const raw = await shell('hermes sessions list --limit 10');
+  if (raw) {
     const data = parseHermesSessionsList(raw);
-    hermesSidebarSessionsCache = { at: now, data };
-    return data;
-  } catch (error) {
-    log('sessions.list.error', error.message || 'failed to run hermes sessions list');
-    // Preserve existing cache on error — don't clobber with empty fallback
-    if (hermesSidebarSessionsCache.data.length) {
-      return hermesSidebarSessionsCache.data;
+    if (data.length) {
+      hermesSidebarSessionsCache = { at: now, data };
+      return data;
     }
-    return Array.from(sessions.entries()).map(([id, messages]) => ({
-      id,
-      title: 'local chat',
-      preview: messages.at(-1)?.content?.slice(0, 90) || 'quiet',
-      lastActive: 'now',
-    }));
   }
+  // Preserve existing cache on error — don't clobber with empty fallback
+  if (hermesSidebarSessionsCache.data.length) {
+    return hermesSidebarSessionsCache.data;
+  }
+  return Array.from(sessions.entries()).map(([id, messages]) => ({
+    id,
+    title: 'local chat',
+    preview: messages.at(-1)?.content?.slice(0, 90) || 'quiet',
+    lastActive: 'now',
+  }));
 }
 
-const hermesAllSessionsCache = { at: 0, data: [] };
+let hermesAllSessionsCache = { at: 0, data: [] };
 
-function getAllSessions() {
+async function getAllSessions() {
   const now = Date.now();
   if (hermesAllSessionsCache.data.length && now - hermesAllSessionsCache.at < 10_000) {
     return hermesAllSessionsCache.data;
   }
-
-  try {
-    const raw = execFileSync('bash', ['-lc', 'timeout 8s hermes sessions list --limit 250 2>&1'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const raw = await shell('hermes sessions list --limit 250');
+  if (raw) {
     const data = parseHermesSessionsList(raw);
-    hermesAllSessionsCache = { at: now, data };
-    return data;
-  } catch (error) {
-    log('sessions.list.error', error.message || 'failed to run hermes sessions list');
-    // Preserve existing cache on error — don't clobber with empty fallback
-    if (hermesAllSessionsCache.data.length) {
-      return hermesAllSessionsCache.data;
+    if (data.length) {
+      hermesAllSessionsCache = { at: now, data };
+      return data;
     }
-    return Array.from(sessions.entries()).map(([id, messages]) => ({
-      id,
-      title: 'local chat',
-      preview: messages.at(-1)?.content?.slice(0, 90) || 'quiet',
-      lastActive: 'now',
-    }));
   }
+  if (hermesAllSessionsCache.data.length) {
+    return hermesAllSessionsCache.data;
+  }
+  return Array.from(sessions.entries()).map(([id, messages]) => ({
+    id,
+    title: 'local chat',
+    preview: messages.at(-1)?.content?.slice(0, 90) || 'quiet',
+    lastActive: 'now',
+  }));
 }
 
 function getSystem() {
@@ -756,22 +764,16 @@ function parseHermesInsights(raw) {
   };
 }
 
-function getInsights() {
+async function getInsights() {
   const now = Date.now();
   if (getInsights.cache && now - getInsights.cache.at < 300_000) return getInsights.cache.data;
-  try {
-    const raw = execFileSync('bash', ['-lc', 'timeout 15s hermes insights --days 7 2>&1'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 64 * 1024,
-    });
+  const raw = await shell('hermes insights --days 7', '15s');
+  if (raw) {
     const data = parseHermesInsights(raw);
     getInsights.cache = { at: now, data };
     return data;
-  } catch (error) {
-    log('insights.error', error.message || 'failed to run hermes insights');
-    if (getInsights.cache?.data) return getInsights.cache.data;
   }
+  if (getInsights.cache?.data) return getInsights.cache.data;
   return {
     sessions: 0, messages: 0, toolCalls: 0, userMessages: 0,
     inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -780,49 +782,49 @@ function getInsights() {
 }
 getInsights.cache = { at: 0, data: null };
 
-function getTokens() {
-  const insights = getInsights();
+function getTokens(insights) {
+  const data = insights || { totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, sessions: 0, messages: 0, toolCalls: 0, period: '', modelBreakdown: [] };
   return {
-    totalTokens: insights.totalTokens,
-    inputTokens: insights.inputTokens,
-    outputTokens: insights.outputTokens,
-    cacheRead: insights.cacheRead,
-    cacheWrite: insights.cacheWrite,
-    promptTokens: insights.inputTokens,
-    completionTokens: insights.outputTokens,
-    sessions: insights.sessions,
-    messages: insights.messages,
-    toolCalls: insights.toolCalls,
-    period: insights.period,
-    modelBreakdown: insights.modelBreakdown.map(m => ({ model: m.model, tokens: m.tokens })),
+    totalTokens: data.totalTokens,
+    inputTokens: data.inputTokens,
+    outputTokens: data.outputTokens,
+    cacheRead: data.cacheRead,
+    cacheWrite: data.cacheWrite,
+    promptTokens: data.inputTokens,
+    completionTokens: data.outputTokens,
+    sessions: data.sessions,
+    messages: data.messages,
+    toolCalls: data.toolCalls,
+    period: data.period,
+    modelBreakdown: data.modelBreakdown.map(m => ({ model: m.model, tokens: m.tokens })),
   };
 }
 
 
-function buildUsageSummary() {
-  const insights = getInsights();
+function buildUsageSummary(insights) {
+  const data = insights || { sessions: 0, messages: 0, toolCalls: 0, userMessages: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, period: '', modelBreakdown: [] };
   const recentKinds = events.slice(-50).reduce((acc, event) => {
     acc[event.kind] = (acc[event.kind] || 0) + 1;
     return acc;
   }, {});
   return {
     generatedAt: new Date().toISOString(),
-    sessionCount: insights.sessions,
-    messageCount: insights.messages,
-    toolCalls: insights.toolCalls,
-    userMessages: insights.userMessages,
-    inputTokens: insights.inputTokens,
-    outputTokens: insights.outputTokens,
-    cacheRead: insights.cacheRead,
-    cacheWrite: insights.cacheWrite,
-    totalTokens: insights.totalTokens,
-    period: insights.period,
-    modelBreakdown: insights.modelBreakdown,
+    sessionCount: data.sessions,
+    messageCount: data.messages,
+    toolCalls: data.toolCalls,
+    userMessages: data.userMessages,
+    inputTokens: data.inputTokens,
+    outputTokens: data.outputTokens,
+    cacheRead: data.cacheRead,
+    cacheWrite: data.cacheWrite,
+    totalTokens: data.totalTokens,
+    period: data.period,
+    modelBreakdown: data.modelBreakdown,
     eventCount: events.length,
     cronCount: cronJobs.length,
     rootCount: ROOTS.length,
     recentKinds,
-    tokenUsage: getTokens(),
+    tokenUsage: getTokens(insights),
     lastEvent: events.at(-1) || null,
   };
 }
@@ -830,13 +832,16 @@ function buildUsageSummary() {
 function extractConfigSummary() {
   const configPath = path.join(CONTROL_HOME, 'config.yaml');
   let raw = '';
+  let config = {};
   try {
     raw = fs.readFileSync(configPath, 'utf8');
+    config = yaml.load(raw) || {};
   } catch {}
-  const defaultModel = (raw.match(/default:\s*([^\n]+)/) || [])[1]?.trim() || 'unknown';
-  const provider = (raw.match(/provider:\s*([^\n]+)/) || [])[1]?.trim() || 'unknown';
-  const fallbackProvider = (raw.match(/fallback_model:[\s\S]*?provider:\s*([^\n]+)/) || [])[1]?.trim() || 'none';
-  const fallbackModel = (raw.match(/fallback_model:[\s\S]*?model:\s*([^\n]+)/) || [])[1]?.trim() || 'none';
+  const model = config.model || {};
+  const defaultModel = model.default || 'unknown';
+  const provider = model.provider || 'unknown';
+  const fallbackModel = config.alternate_models?.[0]?.model || 'none';
+  const fallbackProvider = config.alternate_models?.[0]?.provider || 'none';
   return { defaultModel, provider, fallbackProvider, fallbackModel, raw };
 }
 
@@ -866,18 +871,13 @@ function getModels() {
   ];
 }
 
-function buildKnowledgeMarkdown() {
-  try {
-    const raw = execFileSync('bash', ['-lc', 'timeout 8s hermes status 2>&1'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 32 * 1024,
-    });
-    const status = String(raw || '').replace(/\r?\n/g, '\n').trim();
+async function buildKnowledgeMarkdown() {
+  const raw = await shell('hermes status');
+  if (raw) {
+    const status = raw.replace(/\r?\n/g, '\n').trim();
     return `## Hermes Status\n\`\`\`\n${status}\n\`\`\``;
-  } catch (error) {
-    return '## Hermes Status\n`hermes status` unavailable — is Hermes running?';
   }
+  return '## Hermes Status\n`hermes status` unavailable — is Hermes running?';
 }
 
 function buildSpriteState() {
@@ -896,8 +896,15 @@ function buildSpriteState() {
   return spriteState;
 }
 
-function buildDashboardState(authed = false) {
+async function buildDashboardState(authed = false) {
   const terminal = ensureTerminalSession();
+  const [sessionsData, allSessionsData, cronJobsData, insightsData, knowledgeData] = await Promise.all([
+    getSessions(),
+    getAllSessions(),
+    getCronJobs(),
+    getInsights(),
+    buildKnowledgeMarkdown(),
+  ]);
   return {
     title: 'Hermes Control Interface',
     now: new Date().toISOString(),
@@ -905,18 +912,18 @@ function buildDashboardState(authed = false) {
     authed,
     agent: buildSpriteState(),
     system: getSystem(),
-    sessionCount: getSessions().length,
-    sessions: getSessions(),
-    allSessions: getAllSessions(),
-    cronJobs: getCronJobs(),
+    sessionCount: sessionsData.length,
+    sessions: sessionsData,
+    allSessions: allSessionsData,
+    cronJobs: cronJobsData,
     quickActions,
     explorerRoots: ROOTS.map(buildExplorerRoot),
-    tokens: getTokens(),
-    usage: buildUsageSummary(),
+    tokens: getTokens(insightsData),
+    usage: buildUsageSummary(insightsData),
     skills: getSkills(),
     models: getModels(),
     configSummary: extractConfigSummary(),
-    knowledge: buildKnowledgeMarkdown(),
+    knowledge: knowledgeData,
     logs: events.slice(-30),
     loginIdentity: 'root@hermes',
     workingDir: PROJECT_ROOT,
@@ -973,8 +980,8 @@ app.post('/api/logout', requireCsrf, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/dashboard-state', requireAuth, (req, res) => {
-  res.json(buildDashboardState(true));
+app.get('/api/dashboard-state', requireAuth, async (req, res) => {
+  res.json(await buildDashboardState(true));
 });
 
 app.get('/api/sessions', requireAuth, (req, res) => {
@@ -1241,16 +1248,18 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 
 const wss = new WebSocketServer({ server, path: '/ws' });
 
-function broadcast() {
-  const payload = JSON.stringify({ type: 'snapshot', payload: buildDashboardState(true) });
+async function broadcast() {
+  const state = await buildDashboardState(true);
+  const payload = JSON.stringify({ type: 'snapshot', payload: state });
   for (const client of wss.clients) {
     if (client.readyState === 1 && client.authed) client.send(payload);
   }
 }
 
-wss.on('connection', (socket, req) => {
+wss.on('connection', async (socket, req) => {
   socket.authed = isAuthed(req);
-  socket.send(JSON.stringify({ type: 'snapshot', payload: buildDashboardState(socket.authed) }));
+  const state = await buildDashboardState(socket.authed);
+  socket.send(JSON.stringify({ type: 'snapshot', payload: state }));
   if (socket.authed && terminalSession.buffer) {
     socket.send(JSON.stringify({
       type: 'terminal-transcript',
@@ -1297,13 +1306,13 @@ wss.on('connection', (socket, req) => {
 
 log('system.started', 'Hermes Control Interface booted');
 
-// Lightweight system metrics broadcast every 3 seconds (no hermes commands)
+// Lightweight system metrics broadcast every 5 seconds (no hermes commands)
 setInterval(() => {
   broadcastToClients({
     type: 'system-metrics',
     payload: getSystem(),
   });
-}, 3000);
+}, 5000);
 
 // Graceful shutdown
 function shutdown(signal) {

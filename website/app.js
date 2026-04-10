@@ -88,7 +88,6 @@ const els = {
   systemPanel: $('#system-panel'),
   cronPanel: $('#cron-panel'),
   tokensPanel: $('#tokens-panel'),
-  backgroundPanel: $('#background-panel'),
   explorerPanel: $('#explorer-panel'),
   knowledgePanel: $('#knowledge-panel'),
   sprite: $('#agent-sprite'),
@@ -655,10 +654,6 @@ function renderTokens(snapshot) {
   els.tokenProvider.textContent = period ? 'insights' : 'local';
 }
 
-function renderBackground() {
-  els.backgroundPanel.innerHTML = '<div class="small-meta" style="padding:12px;">Background process monitoring — coming soon</div>';
-}
-
 function markdownToHtml(md) {
   const lines = String(md || '').split('\n');
   let html = '';
@@ -1116,7 +1111,6 @@ function renderSnapshot(snapshot) {
   if (els.systemPanel && snapshotDataChanged(prev, snapshot, 'system')) renderSystem(snapshot);
   if (els.cronPanel && snapshotDataChanged(prev, snapshot, 'cronJobs')) renderCron(snapshot);
   if (els.tokensPanel && snapshotDataChanged(prev, snapshot, 'tokens')) renderTokens(snapshot);
-  if (els.backgroundPanel && snapshotDataChanged(prev, snapshot, 'background')) renderBackground(snapshot);
   if (els.agentPanel) renderAgent(snapshot);
   if (els.knowledgePanel && snapshotDataChanged(prev, snapshot, 'knowledge')) renderKnowledge(snapshot);
   if (els.explorerPanel && snapshotDataChanged(prev, snapshot, 'explorerRoots')) renderTreeRoots(snapshot);
@@ -1260,9 +1254,11 @@ async function loadLayoutState() {
 
 async function saveLayoutState() {
   const layout = { panels: getPanelLayout() };
+  const h = { 'Content-Type': 'application/json' };
+  if (state.csrfToken) h['X-CSRF-Token'] = state.csrfToken;
   const res = await fetch('/api/layout', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: h,
     body: JSON.stringify(layout),
   });
   const data = await res.json().catch(() => ({}));
