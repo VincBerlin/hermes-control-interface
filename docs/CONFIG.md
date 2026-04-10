@@ -38,17 +38,19 @@ TCP port the server listens on. The dashboard binds to `0.0.0.0` (all interfaces
 PORT=10702 npm start
 ```
 
-### `HERMES_HOME`
+### `HERMES_CONTROL_HOME`
 
 **Default:** `~/.hermes` (resolved at runtime via `os.homedir()`)
 
-Path to the Hermes state directory. Used for:
-- Avatar image storage (`$HERMES_HOME/control-interface/`)
-- Layout persistence (`$HERMES_HOME/control-interface-layout.json`)
-- Default explorer root
+Path to the Hermes root directory. Used for:
+- Avatar image storage (`$HERMES_CONTROL_HOME/control-interface/`)
+- Layout persistence (`$HERMES_CONTROL_HOME/control-interface-layout.json`)
+- Default file explorer root
+
+This is the top-level `.hermes` directory, NOT a profile subdirectory. Previously named `HERMES_HOME` — renamed to avoid conflict with the `HERMES_HOME` env var set by Hermes profiles.
 
 ```bash
-HERMES_HOME=/opt/hermes npm start
+HERMES_CONTROL_HOME=/opt/hermes npm start
 ```
 
 ### `HERMES_PROJECTS_ROOT`
@@ -80,7 +82,7 @@ Each root object:
 - `label` — display name shown in the UI
 - `root` — absolute filesystem path
 
-If not set, defaults to `[HERMES_HOME]` (i.e. `/root/.hermes`).
+If not set, defaults to `[HERMES_CONTROL_HOME]` (i.e. `/root/.hermes`).
 
 ---
 

@@ -115,7 +115,7 @@ grep HERMES_CONTROL_ROOTS .env
 
 # Default roots if not set:
 # - HERMES_PROJECTS_ROOT (defaults to parent dir of the repo)
-# - HERMES_HOME (defaults to ~/.hermes)
+# - HERMES_CONTROL_HOME (defaults to ~/.hermes)
 ```
 
 ### Directory tree is empty

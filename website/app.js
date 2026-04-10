@@ -68,9 +68,7 @@ const els = {
   quickActions: $('#quick-actions'),
   agentList: $('#agent-list'),
   terminalOutput: $('#terminal-output'),
-  terminalForm: $('#terminal-form'),
-  terminalInput: $('#terminal-input'),
-  terminalPrompt: $('#terminal-prompt'),
+  // terminal form removed — xterm.js handles all input directly
   terminalLabel: $('#terminal-label'),
   terminalFullscreenBtn: $('#terminal-fullscreen-btn'),
   fileStatus: $('#file-status'),
@@ -331,18 +329,21 @@ function bootTerminal() {
 
   els.terminalOutput.innerHTML = '';
   if (!state.terminal) {
+    const isMobile = window.matchMedia('(max-width: 768px)').matches;
     state.terminal = new window.Terminal({
       cursorBlink: true,
       fontFamily: 'JetBrains Mono, monospace',
-      fontSize: 13,
+      fontSize: isMobile ? 14 : 13,
       theme: {
         background: '#000000',
         foreground: '#ede6d4',
         cursor: '#f4c75c',
         selectionBackground: 'rgba(244, 199, 92, 0.25)',
       },
-      scrollback: 5000,
+      scrollback: isMobile ? 800 : 2000,
       allowTransparency: true,
+      smoothScrollDuration: isMobile ? 0 : 80,
+      convertEol: true,
     });
     state.terminalFit = new window.FitAddon.FitAddon();
     state.terminal.loadAddon(state.terminalFit);
@@ -586,8 +587,9 @@ function renderQuickActions(snapshot) {
     btn.textContent = action.cmd;
     btn.title = action.desc;
     btn.addEventListener('click', () => {
-      els.terminalInput.value = action.cmd;
-      els.terminalInput.focus();
+      if (state.terminal) {
+        state.terminal.write(action.cmd + '\r');
+      }
     });
     els.quickActions.appendChild(btn);
   });
@@ -604,7 +606,7 @@ function renderAgentList(snapshot) {
     const statusClass = running ? 'running' : 'stopped';
     const activeClass = p.active ? 'active-profile' : '';
     const modelName = p.model.length > 22 ? p.model.slice(0, 20) + '…' : p.model;
-    const toggleLabel = running ? 'stop' : 'start';
+    const toggleLabel = running ? 'stop gateway' : 'start gateway';
     return `
       <div class="agent-item ${activeClass}" data-profile="${escapeHtml(p.name)}">
         <div class="agent-row">
@@ -614,7 +616,10 @@ function renderAgentList(snapshot) {
         </div>
         <div class="agent-meta">
           <span class="agent-model">${escapeHtml(modelName)}</span>
-          <button class="gw-toggle ${statusClass}" data-gw-profile="${escapeHtml(p.name)}" data-gw-action="${running ? 'stop' : 'start'}" title="gateway ${toggleLabel}">${toggleLabel}</button>
+          <div class="agent-actions">
+            ${!p.active ? `<button class="gw-toggle activate" data-activate-profile="${escapeHtml(p.name)}" title="set as default profile">activate</button>` : ''}
+            <button class="gw-toggle ${statusClass}" data-gw-profile="${escapeHtml(p.name)}" data-gw-action="${running ? 'stop' : 'start'}" title="${toggleLabel}">${toggleLabel}</button>
+          </div>
         </div>
       </div>`;
   }).join('');
@@ -636,6 +641,27 @@ async function toggleGateway(profile, action) {
     }
   } catch (e) {
     console.error('Gateway toggle error:', e);
+  }
+}
+
+async function useProfile(profile) {
+  try {
+    const h = { 'Content-Type': 'application/json' };
+    if (state.csrfToken) h['X-CSRF-Token'] = state.csrfToken;
+    const res = await fetch('/api/profiles/use', {
+      method: 'POST',
+      headers: h,
+      body: JSON.stringify({ profile }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`Profile "${profile}" activated`, 'success');
+      fetchSnapshot();
+    } else {
+      showToast(`Activate failed: ${data.error}`, 'error');
+    }
+  } catch (e) {
+    showToast(`Activate error: ${e.message}`, 'error');
   }
 }
 
@@ -1193,7 +1219,6 @@ function renderSnapshot(snapshot) {
     els.sidebarAgentModel.textContent = snapshot.configSummary?.defaultModel || 'unknown';
   }
   if (els.terminalLabel) els.terminalLabel.textContent = snapshot.loginIdentity || 'root@hermes';
-  if (els.terminalPrompt) els.terminalPrompt.textContent = snapshot.terminal?.prompt || `${snapshot.loginIdentity || 'root@hermes'}:${snapshot.terminal?.cwd || snapshot.workingDir || '/'}#`;
 
   // Always update sidebar agent (lightweight — just text + cached avatar draw)
   renderSidebarAgent(snapshot);
@@ -1629,7 +1654,12 @@ function bindUi() {
     if (!btn) return;
     const profile = btn.dataset.gwProfile;
     const action = btn.dataset.gwAction;
-    if (profile && action) toggleGateway(profile, action);
+    const activateProfile = btn.dataset.activateProfile;
+    if (activateProfile) {
+      useProfile(activateProfile);
+    } else if (profile && action) {
+      toggleGateway(profile, action);
+    }
   });
 
   // Log panel bindings
@@ -1690,14 +1720,6 @@ function bindUi() {
     } catch (error) {
       els.loginError.textContent = error.message;
     }
-  });
-
-  els.terminalForm.addEventListener('submit', async (ev) => {
-    ev.preventDefault();
-    const command = els.terminalInput.value.trim();
-    if (!command) return;
-    els.terminalInput.value = '';
-    await runTerminalCommand(command);
   });
 
   els.saveBtn.addEventListener('click', saveCurrentFile);

@@ -8,9 +8,13 @@ A self-hosted web dashboard for the Hermes AI agent stack. Provides a browser-ba
 
 ## Features
 
-- **Terminal** — Real PTY shell (node-pty) in the browser via xterm.js. Full ANSI colour, persistent session.
+- **Terminal** — Real PTY shell (node-pty) in the browser via xterm.js. Full ANSI colour, persistent session. Mobile-optimized (reduced scrollback, touch scroll).
 - **File Explorer** — Browse and edit files across configurable root directories. No upload/download friction.
+- **Agent List** — View all Hermes profiles with status, model, and gateway controls. Start/stop gateway and activate profiles directly from the sidebar.
+- **Gateway Service Management** — Install and manage systemd gateway services per profile from the dashboard.
 - **Session Monitor** — Live view of Hermes sessions and cron jobs.
+- **Real-time Logs** — Stream agent, error, and gateway logs with level filtering.
+- **Token Usage** — Interactive token usage stats with time/source filters.
 - **System Metrics** — CPU, memory, uptime. Event-driven updates via WebSocket (no polling).
 - **Rate-Limited Auth** — 5 failed login attempts in 15 minutes → 15-minute lockout. Timing-safe password comparison. HMAC-signed session cookies.
 - **Layout Persistence** — Dashboard panel arrangement saved to `~/.hermes/control-interface-layout.json`.
@@ -72,9 +76,9 @@ All settings are environment variables. See [docs/CONFIG.md](docs/CONFIG.md) for
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `10272` | HTTP listen port |
-| `HERMES_HOME` | `~/.hermes` | Hermes state directory |
+| `HERMES_CONTROL_HOME` | `~/.hermes` | Hermes root directory (file explorer root) |
 | `HERMES_PROJECTS_ROOT` | parent of repo | Explorer projects root |
-| `HERMES_CONTROL_ROOTS` | `HERMES_PROJECTS_ROOT` + `HERMES_HOME` | Explorer root overrides |
+| `HERMES_CONTROL_ROOTS` | `HERMES_PROJECTS_ROOT` + `HERMES_CONTROL_HOME` | Explorer root overrides |
 
 ---
 
@@ -128,6 +132,11 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full security analysis.
 | `POST` | `/api/login` | No | Login (rate-limited) |
 | `POST` | `/api/logout` | No | Clear session |
 | `GET` | `/api/dashboard-state` | Yes | Full dashboard snapshot |
+| `GET` | `/api/profiles` | Yes | List Hermes profiles |
+| `POST` | `/api/profiles/use` | Yes | Set active profile |
+| `GET` | `/api/gateway/:profile` | Yes | Gateway service status |
+| `POST` | `/api/gateway/:profile/:action` | Yes | Start/stop/restart gateway |
+| `GET` | `/api/gateway/:profile/logs` | Yes | Gateway journal logs |
 | `GET` | `/api/explorer` | Yes | Directory tree |
 | `GET` | `/api/file` | Yes | Read file |
 | `POST` | `/api/file` | Yes | Write file |
@@ -154,11 +163,16 @@ Internal endpoints (`/internal/cron/:action`) require the `x-hermes-control-secr
 hermes-control-interface/
 ├── server.js          # Express server, auth, PTY, WebSocket, APIs
 ├── website/           # Frontend (vanilla JS, xterm.js)
+├── scripts/           # Setup scripts
+│   └── setup-gateway-service.sh  # systemd gateway service installer
 ├── docs/              # Detailed documentation
-│   ├── CONFIG.md       # Environment variable reference
-│   ├── SECURITY.md    # Security analysis
+│   ├── API.md         # API endpoint details
+│   ├── CONFIG.md      # Environment variable reference
 │   ├── DEPLOY.md      # Production deployment guide
-│   └── API.md         # API endpoint details
+│   ├── INSTALL.md     # Installation guide
+│   ├── PASSWORD.md    # Password management
+│   ├── SECURITY.md    # Security analysis
+│   └── TROUBLESHOOTING.md
 ├── .env.example       # Template — copy to .env
 ├── .env               # Runtime config (gitignored)
 ├── install.sh         # Interactive first-run setup
@@ -168,6 +182,39 @@ hermes-control-interface/
 ---
 
 ## Changelog
+
+### v2.0.0 — Agent Management + Gateway Services + UX Polish
+- **Agent List panel** — sidebar showing all Hermes profiles with status, model, gateway controls
+- **Activate profile** — set default profile via `hermes profile use` from dashboard
+- **Gateway service management** — install/start/stop/restart systemd services per profile
+  - `scripts/setup-gateway-service.sh` — one-command service installer
+  - API: `GET/POST /api/gateway/:profile/*` — status, start, stop, restart, logs
+- **Real-time logs panel** — stream agent/error/gateway logs with level filter
+- **Token usage panel** — interactive filters by time period and source
+- **Terminal UX** — mobile-optimized (reduced scrollback, touch scroll, larger font)
+- **File explorer root fix** — `HERMES_CONTROL_HOME` (always `~/.hermes`, not profile subdirectory)
+- **Security fixes** — CSP-safe event delegation, CSRF on gateway endpoints, Python log buffering fix
+
+### v1.11.0 — Real-time Logs Panel
+- Streaming logs via `hermes logs` (Agent/Errors/Gateway tabs)
+- Log level filter (DEBUG/INFO/WARN/ERROR)
+- Pause/resume log stream
+
+### v1.10.0 — Token Usage
+- Interactive token usage filters (time period + source)
+- Model breakdown per provider
+
+### v1.9.0 — UI Layout
+- Sidebar reorder, responsive panels, mobile fix
+
+### v1.8.0 — Password System
+- bcrypt auth, rate limiting, CSRF
+
+### v1.7.0 — Architecture
+- Async CLI execution, YAML parser, panel cleanup
+
+### v1.6.0 — Code Cleanup
+- Dead code removal, timing-safe comparison, graceful shutdown
 
 ### v1.5.0 — Open Source Readiness
 - MIT LICENSE, CONTRIBUTING.md, CODE_OF_CONDUCT.md

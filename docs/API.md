@@ -93,6 +93,106 @@ Clears the session cookie.
 
 ---
 
+### `GET /api/profiles`
+
+**Auth required:** Yes
+
+Returns all configured Hermes profiles with their status.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "profiles": [
+    { "name": "default", "model": "xiaomi/mimo-v2-pro", "gateway": "stopped", "alias": null, "active": false },
+    { "name": "david", "model": "xiaomi/mimo-v2-pro", "gateway": "running", "alias": "david", "active": true },
+    { "name": "soci", "model": "gpt-5.4-mini", "gateway": "stopped", "alias": "soci", "active": false }
+  ]
+}
+```
+
+---
+
+### `POST /api/profiles/use`
+
+**Auth required:** Yes (CSRF required)
+
+Sets the active (default) Hermes profile.
+
+**Request body:**
+```json
+{ "profile": "david" }
+```
+
+**Response:**
+```json
+{ "ok": true, "profile": "david", "output": "..." }
+```
+
+---
+
+### `GET /api/gateway/:profile`
+
+**Auth required:** Yes
+
+Returns the systemd service status for a profile's gateway.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "profile": "david",
+  "service": "hermes-gateway-david",
+  "active": true,
+  "enabled": true,
+  "status": "● hermes-gateway-david.service - Hermes Gateway - david..."
+}
+```
+
+---
+
+### `POST /api/gateway/:profile/:action`
+
+**Auth required:** Yes (CSRF required)
+
+Controls a gateway systemd service.
+
+**Actions:** `start`, `stop`, `restart`, `enable`, `disable`
+
+**Response:**
+```json
+{
+  "ok": true,
+  "profile": "david",
+  "action": "start",
+  "active": true,
+  "output": ""
+}
+```
+
+---
+
+### `GET /api/gateway/:profile/logs`
+
+**Auth required:** Yes
+
+Returns journal logs for a gateway service.
+
+**Query parameters:**
+- `lines` (optional) — number of log lines to return (default: 50, max: 500)
+
+**Response:**
+```json
+{
+  "ok": true,
+  "profile": "david",
+  "service": "hermes-gateway-david",
+  "logs": "Apr 10 23:00:00 vm1 systemd[1]: Started Hermes Gateway - david..."
+}
+```
+
+---
+
 ### `GET /api/dashboard-state`
 
 **Auth required:** Yes

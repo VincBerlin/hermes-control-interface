@@ -30,7 +30,7 @@ const CONTROL_SECRET = process.env.HERMES_CONTROL_SECRET;
 const AUTH_COOKIE = 'hermes_control_auth';
 const PROJECT_ROOT = __dirname;
 const PROJECTS_ROOT = process.env.HERMES_PROJECTS_ROOT || path.dirname(PROJECT_ROOT);
-const CONTROL_HOME = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+const CONTROL_HOME = process.env.HERMES_CONTROL_HOME || path.join(os.homedir(), '.hermes');
 const CONTROL_STATE_DIR = path.join(CONTROL_HOME, 'control-interface');
 const AVATAR_OVERRIDE_PATH = path.join(CONTROL_STATE_DIR, 'avatar.dataurl');
 
@@ -1086,6 +1086,19 @@ getProfiles.cache = { at: 0, data: [] };
 app.get('/api/profiles', requireAuth, async (req, res) => {
   const profiles = await getProfiles();
   res.json({ ok: true, profiles });
+});
+
+app.post('/api/profiles/use', requireCsrf, async (req, res) => {
+  const name = String(req.body?.profile || '').trim();
+  if (!name) return res.status(400).json({ error: 'profile name required' });
+  try {
+    const result = await shell(`hermes profile use ${name}`, '10s');
+    // Invalidate profiles cache so next fetch shows updated active profile
+    getProfiles.cache = { at: 0, data: [] };
+    res.json({ ok: true, profile: name, output: result.trim() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── Gateway Service Management ─────────────────────────────────────────────

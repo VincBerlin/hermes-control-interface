@@ -151,11 +151,14 @@ body {
 .agent-name { font-size: 12px; font-weight: 500; color: var(--text); }
 .agent-badge { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; padding: 1px 6px; border-radius: 4px; background: rgba(103, 240, 162, 0.12); color: var(--green); font-weight: 600; }
 .agent-meta { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; padding-left: 15px; }
-.agent-model { font-size: 10px; color: var(--muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-actions { display: flex; gap: 4px; }
+.agent-model { font-size: 10px; color: var(--muted); max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gw-toggle { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.1); cursor: pointer; background: rgba(255,255,255,0.04); color: var(--muted); transition: all 0.15s; }
 .gw-toggle:hover { border-color: rgba(255,255,255,0.2); background: rgba(255,255,255,0.08); }
 .gw-toggle.running { color: var(--green); background: rgba(103, 240, 162, 0.08); border-color: rgba(103, 240, 162, 0.2); }
 .gw-toggle.running:hover { background: rgba(103, 240, 162, 0.15); }
+.gw-toggle.activate { color: var(--gold); background: rgba(244, 199, 92, 0.08); border-color: rgba(244, 199, 92, 0.2); }
+.gw-toggle.activate:hover { background: rgba(244, 199, 92, 0.15); }
 
 .footer-note { color: var(--muted); font-size: 11px; line-height: 1.6; }
 .small-meta { color: var(--muted); font-size: 11px; line-height: 1.7; }
@@ -179,15 +182,10 @@ body {
 .layout-edit-mode .panel { outline: 1px dashed rgba(244, 199, 92, 0.35); outline-offset: 0; }
 
 .terminal-panel { min-height: 360px; }
-.terminal-body { display: grid; gap: 12px; }
-.terminal-banner { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 14px; background: rgba(0,0,0,0.24); }
-.terminal-badge { color: var(--green); font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; }
-.terminal-path { color: var(--text); font-size: 12px; }
-.terminal-hint { color: var(--muted); font-size: 11px; }
-.terminal-hint span { color: var(--amber); }
+.terminal-body { display: flex; flex-direction: column; height: 100%; }
 .terminal-output {
-  min-height: 180px;
-  max-height: 280px;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--line-soft);
   border-radius: 14px;
@@ -197,7 +195,7 @@ body {
   padding: 10px 12px;
   height: 100%;
 }
-.terminal-output .xterm-viewport { overflow-y: auto !important; }
+.terminal-output .xterm-viewport { overflow-y: auto !important; -webkit-overflow-scrolling: touch; }
 .terminal-output .xterm-screen { height: 100%; }
 .terminal-line { white-space: pre-wrap; color: var(--text); font-size: 12px; line-height: 1.6; }
 .terminal-line.system { color: var(--gold); }
@@ -253,9 +251,10 @@ body.terminal-fullscreen .terminal-panel .panel-head {
 }
 body.terminal-fullscreen .terminal-body {
   height: 100%;
-  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 body.terminal-fullscreen .terminal-output {
+  flex: 1;
+  min-height: 0;
   max-height: none;
   min-height: 0;
   height: 100%;
@@ -330,11 +329,6 @@ body.explorer-fullscreen .tree {
   overflow-y: auto;
 }
 body.explorer-fullscreen .resize-handle { display: none; }
-.terminal-form { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding-top: 12px; border-top: 1px solid var(--line-soft); }
-.prompt { color: var(--gold); font-weight: 700; }
-#terminal-input { width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(0,0,0,0.28); color: var(--text); outline: none; font-family: inherit; }
-#terminal-input:focus { border-color: rgba(244, 199, 92, 0.9); box-shadow: 0 0 0 3px rgba(244, 199, 92, 0.08); }
-.submit-btn { padding-inline: 14px; }
 
 .explorer-panel { min-height: 360px; }
 .explorer-panel .panel-body { overflow: hidden; }
@@ -567,14 +561,7 @@ body.explorer-fullscreen .resize-handle { display: none; }
   .panel-head { padding: 10px 10px 9px; cursor: default; }
   .panel-body { padding: 10px; }
   .terminal-panel, .explorer-panel { min-height: 0; }
-  .terminal-banner { padding: 10px; }
-  .terminal-output { min-height: 200px; max-height: 34vh; }
-  .terminal-form {
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
-  .prompt { word-break: break-all; font-size: 11px; }
-  #terminal-input { font-size: 16px; }
+  .terminal-output { flex: 1; min-height: 0; }
   .explorer-body { grid-template-columns: 1fr; gap: 10px; }
   .explorer-roots { max-height: 44vh; }
   .editor-shell { min-height: 0; }
@@ -607,6 +594,6 @@ body.explorer-fullscreen .resize-handle { display: none; }
   .pill { padding: 6px 8px; font-size: 10px; }
   .side-section { padding: 9px; }
   .quick-actions { grid-template-columns: 1fr; }
-  .terminal-output { max-height: 32vh; }
+  .terminal-output { flex: 1; min-height: 0; }
   .explorer-roots { max-height: 38vh; }
 }

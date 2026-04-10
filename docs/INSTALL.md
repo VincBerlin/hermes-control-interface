@@ -23,7 +23,7 @@ Edit `.env` and set:
 - `HERMES_CONTROL_PASSWORD`
 - `HERMES_CONTROL_SECRET`
 - `PORT` if you want a different port
-- `HERMES_HOME` if your Hermes state lives somewhere else
+- `HERMES_CONTROL_HOME` if your Hermes state lives somewhere else
 - `HERMES_PROJECTS_ROOT` if your repos live outside the parent directory of this repo
 
 ## Run
