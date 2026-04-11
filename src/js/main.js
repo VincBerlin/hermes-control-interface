@@ -1280,9 +1280,9 @@ async function showCreateAgent() {
     ],
   });
 
-  if (!result) return;
+  if (!result || result.action === null) return;
 
-  const name = document.getElementById('modal-input-0')?.value || '';
+  const name = result.inputs[0] || '';
   const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
   if (!safeName) {
     await customAlert('Invalid name. Use letters, numbers, hyphens, underscores.', 'Error');
@@ -1291,14 +1291,22 @@ async function showCreateAgent() {
 
   let body = { name: safeName };
 
-  if (result === 'clone') {
+  if (result.action === 'clone') {
     body.cloneArg = '--clone';
-  } else if (result === 'clone_from') {
-    const source = await customPrompt('Clone from which profile?', 'david');
-    if (source) {
-      body.cloneArg = '--clone-from';
-      body.cloneSource = source;
-    }
+  } else if (result.action === 'clone_from') {
+    const sourceResult = await showModal({
+      title: 'Clone From',
+      message: 'Enter profile name to clone from:',
+      inputs: [{ placeholder: 'Source profile (e.g. david)', value: 'david' }],
+      buttons: [
+        { text: 'Cancel', value: null },
+        { text: 'Clone', primary: true, value: 'ok' },
+      ],
+    });
+    if (!sourceResult || sourceResult.action === null) return;
+    const source = sourceResult.inputs[0] || 'david';
+    body.cloneArg = '--clone-from';
+    body.cloneSource = source;
   }
 
   try {
@@ -1320,12 +1328,25 @@ async function showCreateAgent() {
 }
 
 async function showCreateUser() {
-  const username = await customPrompt('Username:');
-  if (!username) return;
-  const password = await customPrompt('Password (min 8 chars):');
-  if (!password) return;
-  const role = await customPrompt('Role (admin/viewer):', 'viewer');
-  if (!role) return;
+  const result = await showModal({
+    title: 'Create User',
+    message: 'Create a new HCI user account.',
+    inputs: [
+      { placeholder: 'Username' },
+      { placeholder: 'Password (min 8 chars)', type: 'password' },
+      { placeholder: 'Role (admin/viewer)', value: 'viewer' },
+    ],
+    buttons: [
+      { text: 'Cancel', value: null },
+      { text: 'Create', primary: true, value: 'ok' },
+    ],
+  });
+  if (!result || result.action === null) return;
+  const [username, password, role] = result.inputs;
+  if (!username || !password || !role) {
+    await customAlert('All fields required', 'Error');
+    return;
+  }
   createUser(username, password, role);
 }
 
@@ -1495,7 +1516,24 @@ function init() {
   // Notifications
   document.getElementById('notif-btn')?.addEventListener('click', () => {
     const dropdown = document.getElementById('notif-dropdown');
-    dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
+    const isVisible = dropdown.style.display !== 'none';
+    dropdown.style.display = isVisible ? 'none' : 'block';
+
+    if (!isVisible) {
+      // Render notifications
+      const listEl = document.getElementById('notif-list');
+      const unread = state.notifications.filter(n => !n.dismissed);
+      if (unread.length === 0) {
+        listEl.innerHTML = '<div class="notif-empty">No notifications</div>';
+      } else {
+        listEl.innerHTML = unread.map(n => `
+          <div class="notif-item notif-${n.type || 'info'}" style="padding:8px;border-bottom:1px solid var(--border);font-size:11px;">
+            <div style="color:var(--fg);">${escapeHtml(n.message || '')}</div>
+            <div style="color:var(--fg-subtle);font-size:10px;margin-top:2px;">${n.timestamp ? new Date(n.timestamp).toLocaleString() : ''}</div>
+          </div>
+        `).join('');
+      }
+    }
   });
 
   document.getElementById('notif-clear')?.addEventListener('click', async () => {
@@ -1558,12 +1596,15 @@ function showModal({ title, message, inputs = [], buttons = [] }) {
     const firstInput = overlay.querySelector('.modal-input');
     if (firstInput) setTimeout(() => firstInput.focus(), 50);
 
-    // Handle buttons
+    // Handle buttons — capture input values before closing
     buttons.forEach((btn, i) => {
       document.getElementById(`modal-btn-${i}`)?.addEventListener('click', () => {
-        const values = inputs.map((_, j) => document.getElementById(`modal-input-${j}`)?.value || '');
+        const inputValues = inputs.map((_, j) => document.getElementById(`modal-input-${j}`)?.value || '');
         overlay.remove();
-        resolve(btn.value !== undefined ? btn.value : (inputs.length ? values : true));
+        resolve({
+          action: btn.value !== undefined ? btn.value : true,
+          inputs: inputValues,
+        });
       });
     });
   });
@@ -1582,7 +1623,7 @@ async function customConfirm(message, title = 'Confirm') {
       { text: 'Confirm', primary: true, value: true },
     ],
   });
-  return result === true;
+  return result?.action === true;
 }
 
 async function customPrompt(message, defaultValue = '', title = 'Input') {
@@ -1592,10 +1633,11 @@ async function customPrompt(message, defaultValue = '', title = 'Input') {
     inputs: [{ placeholder: message, value: defaultValue }],
     buttons: [
       { text: 'Cancel', value: null },
-      { text: 'OK', primary: true },
+      { text: 'OK', primary: true, value: 'ok' },
     ],
   });
-  return result;
+  if (!result || result.action === null) return null;
+  return result.inputs[0] || '';
 }
 
 // ============================================

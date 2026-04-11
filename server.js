@@ -1267,10 +1267,10 @@ app.get('/api/sessions', requireAuth, (req, res) => {
   res.json({ sessions: data, cachedAt: hermesSidebarSessionsCache.at });
 });
 
-app.get('/api/all-sessions', requireAuth, (req, res) => {
+app.get('/api/all-sessions', requireAuth, async (req, res) => {
   // Full list for agent panel — limit 250, cached 10s
-  const data = getAllSessions();
-  res.json({ sessions: data, cachedAt: hermesAllSessionsCache.at });
+  const data = await getAllSessions();
+  res.json({ ok: true, sessions: data, cachedAt: hermesAllSessionsCache.at });
 });
 
 function parseHermesProfileList(raw) {
