@@ -2094,83 +2094,119 @@ async function loadFileExplorer(container, dirPath = '') {
         <button class="btn btn-ghost" onclick="loadFileExplorer(document.querySelector('.page.active'), '${dirPath}')">↻ Refresh</button>
       </div>
     </div>
-    <div class="card" id="file-explorer">
-      <div class="loading">Loading files...</div>
-    </div>
-    <div class="card" id="file-content" style="margin-top:16px;display:none;">
-      <div class="card-title">File Content</div>
-      <pre class="file-content" id="file-content-text" style="white-space:pre-wrap;word-break:break-all;max-height:500px;overflow:auto;font-size:12px;background:var(--bg-card);padding:12px;border-radius:var(--radius);"></pre>
+    <div class="file-explorer-split">
+      <div class="file-tree-panel">
+        <div id="file-tree"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="file-editor-panel" id="file-editor-panel" style="display:none;">
+        <div class="file-editor-toolbar">
+          <span id="file-editor-path" class="file-editor-path">Select a file</span>
+          <button class="btn btn-ghost btn-sm" id="file-save-btn" style="display:none;" onclick="saveCurrentFile()">Save</button>
+        </div>
+        <textarea id="file-editor-text" class="file-editor-textarea" spellcheck="false" placeholder="Select a file from the tree"></textarea>
+      </div>
     </div>
   `;
 
+  // Store current dir in state
+  state.fileExplorerDir = dirPath;
+
   try {
     const res = await api(`/api/files/list?path=${encodeURIComponent(dirPath)}`);
-    const el = document.getElementById('file-explorer');
-    
+    const treeEl = document.getElementById('file-tree');
+
     if (!res.ok) {
-      el.innerHTML = `<div class="error-msg">${res.error || 'Failed to load files'}</div>`;
+      treeEl.innerHTML = `<div class="error-msg">${res.error || 'Failed to load'}</div>`;
       return;
     }
 
     // Breadcrumb
     const parts = res.path ? res.path.split('/').filter(Boolean) : [];
-    let breadcrumb = `<span class="file-link" onclick="loadFileExplorer(document.querySelector('.page.active'), '')">⌂ .hermes</span>`;
+    let breadcrumb = `<div class="file-breadcrumb"><span class="file-link" onclick="loadFileExplorer(document.querySelector('.page.active'), '')">⌂ .hermes</span>`;
     let accum = '';
     for (const part of parts) {
       accum += '/' + part;
       breadcrumb += ` / <span class="file-link" onclick="loadFileExplorer(document.querySelector('.page.active'), '${accum.slice(1)}')">${part}</span>`;
     }
+    breadcrumb += '</div>';
 
     // File list
     let itemsHtml = '';
     if (res.path) {
-      itemsHtml = `<div class="file-item file-dir" onclick="loadFileExplorer(document.querySelector('.page.active'), '${res.parent}')">
-        <span class="file-icon">📁</span>
-        <span class="file-name">..</span>
-        <span class="file-meta">parent</span>
-      </div>`;
+      itemsHtml += `<div class="file-item file-dir" onclick="loadFileExplorer(document.querySelector('.page.active'), '${res.parent}')"><span>📁 ..</span></div>`;
     }
-    
     for (const item of res.items) {
       const icon = item.type === 'directory' ? '📁' : '📄';
-      const cls = item.type === 'directory' ? 'file-dir' : 'file-file';
-      const size = item.type === 'file' ? formatFileSize(item.size) : '';
-      const action = item.type === 'directory' 
+      const size = item.type === 'file' ? ` <span class="file-meta">${formatFileSize(item.size)}</span>` : '';
+      const action = item.type === 'directory'
         ? `loadFileExplorer(document.querySelector('.page.active'), '${item.path}')`
-        : `loadFileContent('${item.path}')`;
-      itemsHtml += `<div class="file-item ${cls}" onclick="${action}">
-        <span class="file-icon">${icon}</span>
-        <span class="file-name">${item.name}</span>
-        <span class="file-meta">${size}</span>
-      </div>`;
+        : `openFileInEditor('${item.path}')`;
+      itemsHtml += `<div class="file-item ${item.type === 'directory' ? 'file-dir' : 'file-file'}" onclick="${action}"><span>${icon} ${item.name}</span>${size}</div>`;
     }
 
-    el.innerHTML = `
-      <div class="file-breadcrumb">${breadcrumb}</div>
-      <div class="file-list">${itemsHtml || '<div class="empty">Empty directory</div>'}</div>
-    `;
+    treeEl.innerHTML = breadcrumb + (itemsHtml || '<div class="empty">Empty directory</div>');
   } catch (e) {
-    document.getElementById('file-explorer').innerHTML = `<div class="error-msg">${e.message}</div>`;
+    document.getElementById('file-tree').innerHTML = `<div class="error-msg">${e.message}</div>`;
+  }
+}
+
+// Open file in the editor pane (split view)
+window.currentFilePath = null;
+async function openFileInEditor(filePath) {
+  const panel = document.getElementById('file-editor-panel');
+  const textEl = document.getElementById('file-editor-text');
+  const pathEl = document.getElementById('file-editor-path');
+  const saveBtn = document.getElementById('file-save-btn');
+
+  panel.style.display = 'flex';
+  pathEl.textContent = filePath;
+  textEl.value = 'Loading...';
+  textEl.disabled = true;
+  saveBtn.style.display = 'none';
+  window.currentFilePath = filePath;
+
+  try {
+    const res = await api(`/api/file?path=${encodeURIComponent(filePath)}`);
+    if (res && res.ok) {
+      textEl.value = res.content || '(empty file)';
+      textEl.disabled = false;
+      saveBtn.style.display = 'inline-flex';
+      // Highlight active file in tree
+      document.querySelectorAll('.file-item').forEach(el => el.classList.remove('active'));
+      const clicked = document.querySelector(`.file-item[onclick*="${filePath}"]`);
+      if (clicked) clicked.classList.add('active');
+    } else {
+      textEl.value = `Error: ${(res && res.error) || 'Could not read file'}\nPath: ${filePath}\n\nTroubleshooting:\n- Check server logs\n- Verify file exists: ls -la ~/.hermes/${filePath}`;
+    }
+  } catch (e) {
+    textEl.value = `Network error: ${e.message}`;
+  }
+}
+
+// Save file from editor
+async function saveCurrentFile() {
+  if (!window.currentFilePath) return;
+  const textEl = document.getElementById('file-editor-text');
+  try {
+    const csrfToken = state.csrfToken || '';
+    const res = await api('/api/file', {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': csrfToken },
+      body: JSON.stringify({ path: window.currentFilePath, content: textEl.value }),
+    });
+    if (res && res.ok) {
+      showToast('File saved', 'success');
+    } else {
+      showToast(res?.error || 'Save failed', 'error');
+    }
+  } catch (e) {
+    showToast('Save failed: ' + e.message, 'error');
   }
 }
 
 async function loadFileContent(filePath) {
-  const contentEl = document.getElementById('file-content');
-  const textEl = document.getElementById('file-content-text');
-  contentEl.style.display = 'block';
-  textEl.textContent = 'Loading...';
-  
-  try {
-    const res = await api(`/api/file?path=${encodeURIComponent(filePath)}`);
-    if (res.ok) {
-      textEl.textContent = res.content || '(empty file)';
-      document.querySelector('#file-content .card-title').textContent = `File: ${filePath}`;
-    } else {
-      textEl.textContent = `Error: ${res.error || 'Could not read file'} (path: ${filePath})`;
-    }
-  } catch (e) {
-    textEl.textContent = `Error: ${e.message}`;
-  }
+  // Redirect to split view editor
+  openFileInEditor(filePath);
 }
 
 function formatFileSize(bytes) {
@@ -2270,6 +2306,9 @@ Object.assign(window, {
 // Expose for onclick handlers in templates
 window.loadUsage = loadUsage;
 window.fetchUsageData = fetchUsageData;
+window.openFileInEditor = openFileInEditor;
+window.saveCurrentFile = saveCurrentFile;
+window.loadFileExplorer = loadFileExplorer;
 window.resumeSession = resumeSession;
 window.openTerminalPanel = openTerminalPanel;
 window.loadHome = loadHome;
