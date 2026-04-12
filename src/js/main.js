@@ -605,7 +605,7 @@ async function loadAgentSessions(container, name) {
                   <td>
                     <div style="display:flex;gap:4px;">
                       <button class="btn btn-ghost btn-sm" onclick="resumeSession('${s.id}')" title="Resume in CLI">▶</button>
-                      <button class="btn btn-ghost btn-sm" onclick="renameSession('${s.id}', '${(s.title || '').replace(/'/g, "\\'")}', '${name}')" title="Rename">✎</button>
+                      <button class="btn btn-ghost btn-sm" onclick="renameSession('${s.id}', '${name}')" title="Rename">✎</button>
                       <button class="btn btn-ghost btn-sm" onclick="exportSession('${s.id}')" title="Export">↓</button>
                       <button class="btn btn-ghost btn-sm btn-danger" onclick="deleteSession('${s.id}', '${name}')" title="Delete">×</button>
                     </div>
@@ -833,7 +833,10 @@ async function loadXtermAndConnect(command) {
   }
 }
 
-async function renameSession(sessionId, currentTitle, profileName) {
+async function renameSession(sessionId, profileName) {
+  // Find current title from the session row in the table
+  const row = document.querySelector(`[onclick*="${sessionId}"]`)?.closest('tr');
+  const currentTitle = row?.querySelector('td:first-child')?.textContent?.trim() || '';
   const newTitle = await customPrompt('New session title:', currentTitle);
   if (newTitle === null || newTitle === currentTitle) return;
   try {

@@ -1545,11 +1545,11 @@ app.get('/api/file', requireAuth, (req, res) => {
   if (!requested) return res.status(400).json({ error: 'path required' });
   try {
     const content = readFileSafe(requested);
-    return res.json({ path: path.resolve(requested), content });
+    return res.json({ path: path.resolve(CONTROL_HOME, requested.replace(/^\/+/, '')), content });
   } catch (error) {
     const message = error.message || 'file read failed';
     const status = message.includes('EISDIR') ? 400 : message.includes('not found') ? 404 : 400;
-    return res.status(status).json({ error: message });
+    return res.status(status).json({ error: message, path: requested });
   }
 });
 
