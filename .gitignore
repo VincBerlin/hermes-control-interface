@@ -7,3 +7,4 @@ npm-debug.log*
 .control-interface/
 hermes_conversation_*.json
 dist/
+website/

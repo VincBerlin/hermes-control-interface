@@ -1,7 +1,7 @@
 {
   "name": "hermes-control-interface",
-  "version": "2.0.0",
-  "description": "Hermes Control Interface web dashboard",
+  "version": "3.0.0",
+  "description": "Self-hosted web dashboard for the Hermes AI agent stack",
   "main": "server.js",
   "engines": {
     "node": ">=20.0.0"
