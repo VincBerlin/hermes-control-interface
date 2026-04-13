@@ -461,6 +461,7 @@ async function loadAgentDetail(container, params) {
       <button class="tab" data-tab="gateway">Gateway</button>
       <button class="tab" data-tab="config">Config</button>
       <button class="tab" data-tab="memory">Memory</button>
+      <button class="tab" data-tab="cron">Cron</button>
     </div>
     <div id="agent-tab-content">
       <div class="loading">Loading</div>
@@ -489,7 +490,8 @@ async function loadAgentTab(tabName, profileName) {
     case 'sessions': await loadAgentSessions(content, profileName); break;
     case 'gateway': await loadAgentGateway(content, profileName); break;
     case 'config': await loadAgentConfig(content, profileName); break;
-    case 'memory': await loadAgentMemory(content, profileName); break;
+      case 'memory': await loadAgentMemory(content, profileName); break;
+      case 'cron': await loadAgentCron(content, profileName); break;
     default: content.innerHTML = '<div class="empty">Unknown tab</div>';
   }
 }
@@ -1173,6 +1175,100 @@ async function loadAgentMemory(container, name) {
     container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${e.message}</div></div>`;
   }
 }
+
+// ============================================
+// Cron Tab (per-profile, hermes cron CLI)
+// ============================================
+async function loadAgentCron(container, name) {
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div style="display:flex;gap:8px;align-items:center;">
+        <span id="cron-scheduler-status" class="badge">loading...</span>
+        <span style="font-size:11px;color:var(--fg-muted);">Scheduler</span>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="showCreateCronModal('${name}')">+ Create Job</button>
+    </div>
+    <div id="cron-list"><div class="loading">Loading cron jobs...</div></div>
+  `;
+  await loadCronJobs(name);
+}
+
+async function loadCronJobs(profile) {
+  const el = document.getElementById('cron-list');
+  const statusEl = document.getElementById('cron-scheduler-status');
+  try {
+    const res = await api('/api/hermes-cron/' + encodeURIComponent(profile));
+    if (!res.ok) { el.innerHTML = '<div class="error-msg">' + (res.error || 'Failed') + '</div>'; return; }
+    if (statusEl) {
+      statusEl.textContent = res.schedulerRunning ? '\u25CF running' : '\u25CB stopped';
+      statusEl.className = 'badge ' + (res.schedulerRunning ? 'status-ok' : 'status-off');
+    }
+    const jobs = res.jobs || [];
+    if (jobs.length === 0) { el.innerHTML = '<div class="card"><div class="card-title">No cron jobs</div></div>'; return; }
+    el.innerHTML = '<table class="data-table"><thead><tr><th>Name</th><th>Schedule</th><th>Status</th><th>Next Run</th><th>Actions</th></tr></thead><tbody>' + jobs.map(function(j) {
+      var sc = j.status === 'active' ? 'status-ok' : j.status === 'paused' ? 'status-off' : '';
+      var nr = j.nextRun ? new Date(j.nextRun).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '\u2014';
+      var act = j.status === 'active'
+        ? '<button class="btn btn-ghost btn-sm" onclick="cronAction(\''+profile+'\',\''+j.id+'\',\'pause\')" title="Pause">\u23F8</button> <button class="btn btn-ghost btn-sm" onclick="cronAction(\''+profile+'\',\''+j.id+'\',\'run\')" title="Run">\u25B6</button>'
+        : '<button class="btn btn-ghost btn-sm" onclick="cronAction(\''+profile+'\',\''+j.id+'\',\'resume\')" title="Resume">\u23F5</button>';
+      return '<tr><td>'+(j.name||j.id)+'</td><td><code style="font-size:11px;">'+j.schedule+'</code></td><td><span class="badge '+sc+'">'+j.status+'</span></td><td style="font-size:11px;color:var(--fg-muted);">'+nr+'</td><td style="display:flex;gap:4px;">'+act+'<button class="btn btn-ghost btn-sm btn-danger" onclick="cronRemove(\''+profile+'\',\''+j.id+'\',\''+(j.name||j.id).replace(/'/g, "\\'")+'\')" title="Remove">\u00D7</button></td></tr>';
+    }).join('') + '</tbody></table>';
+  } catch (e) { el.innerHTML = '<div class="error-msg">'+e.message+'</div>'; }
+}
+
+async function cronAction(profile, jobId, action) {
+  try {
+    await api('/api/hermes-cron/' + encodeURIComponent(profile) + '/' + jobId + '/' + action, { method: 'POST', headers: { 'X-CSRF-Token': state.csrfToken || '' } });
+    showToast('Job ' + action + 'd', 'success');
+    setTimeout(function() { loadCronJobs(profile); }, 500);
+  } catch (e) { showToast(action + ' failed: ' + e.message, 'error'); }
+}
+
+async function cronRemove(profile, jobId, name) {
+  if (!await customConfirm('Remove job "' + name + '"?')) return;
+  try {
+    await api('/api/hermes-cron/' + encodeURIComponent(profile) + '/' + jobId + '/remove', { method: 'POST', headers: { 'X-CSRF-Token': state.csrfToken || '' } });
+    showToast('Job removed', 'success');
+    setTimeout(function() { loadCronJobs(profile); }, 500);
+  } catch (e) { showToast('Remove failed: ' + e.message, 'error'); }
+}
+
+function showCreateCronModal(profile) {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.display = 'flex';
+  overlay.innerHTML = '<div class="modal-card" style="width:500px;max-width:90vw;"><div class="modal-title">Create Cron Job</div><form id="cron-create-form"><div style="margin-bottom:12px;"><label style="font-size:11px;color:var(--fg-muted);display:block;margin-bottom:4px;">Name</label><input type="text" id="cron-name" placeholder="e.g. Daily health check" style="width:100%;padding:8px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--fg);font-family:var(--font);font-size:12px;" /></div><div style="margin-bottom:12px;"><label style="font-size:11px;color:var(--fg-muted);display:block;margin-bottom:4px;">Schedule</label><div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;"><button type="button" class="btn btn-ghost btn-sm cron-preset" data-val="5m">5m</button><button type="button" class="btn btn-ghost btn-sm cron-preset" data-val="15m">15m</button><button type="button" class="btn btn-ghost btn-sm cron-preset" data-val="30m">30m</button><button type="button" class="btn btn-ghost btn-sm cron-preset" data-val="1h">1h</button><button type="button" class="btn btn-ghost btn-sm cron-preset" data-val="6h">6h</button><button type="button" class="btn btn-ghost btn-sm cron-preset" data-val="12h">12h</button><button type="button" class="btn btn-ghost btn-sm cron-preset" data-val="daily">daily</button></div><input type="text" id="cron-schedule" placeholder="e.g. every 30m or 0 9 * * *" style="width:100%;padding:8px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--fg);font-family:var(--font);font-size:12px;" required /></div><div style="margin-bottom:12px;"><label style="font-size:11px;color:var(--fg-muted);display:block;margin-bottom:4px;">Prompt (task instruction)</label><textarea id="cron-prompt" rows="3" placeholder="Check system health and report" style="width:100%;resize:vertical;font-family:var(--font);font-size:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--fg);padding:8px;"></textarea></div><div style="display:flex;gap:8px;margin-bottom:12px;"><div style="flex:1;"><label style="font-size:11px;color:var(--fg-muted);display:block;margin-bottom:4px;">Deliver</label><select id="cron-deliver" class="log-level-select" style="width:100%;"><option value="origin">origin</option><option value="local">local</option><option value="telegram">telegram</option><option value="discord">discord</option></select></div><div style="flex:1;"><label style="font-size:11px;color:var(--fg-muted);display:block;margin-bottom:4px;">Repeat</label><select id="cron-repeat" class="log-level-select" style="width:100%;"><option value="">forever</option><option value="1">once</option><option value="5">5 times</option><option value="10">10 times</option><option value="50">50 times</option></select></div></div><div class="modal-actions"><button type="button" class="btn btn-ghost" id="cron-cancel">Cancel</button><button type="submit" class="btn btn-primary">Create Job</button></div></form></div>';
+  document.body.appendChild(overlay);
+  overlay.querySelectorAll('.cron-preset').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      document.getElementById('cron-schedule').value = btn.dataset.val;
+      overlay.querySelectorAll('.cron-preset').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+    });
+  });
+  overlay.querySelector('#cron-cancel').addEventListener('click', function() { overlay.remove(); });
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+  overlay.querySelector('#cron-create-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    var schedule = document.getElementById('cron-schedule').value.trim();
+    var prompt = document.getElementById('cron-prompt').value.trim();
+    var name = document.getElementById('cron-name').value.trim();
+    var deliver = document.getElementById('cron-deliver').value;
+    var repeat = document.getElementById('cron-repeat').value;
+    if (!schedule) { showToast('Schedule required', 'error'); return; }
+    if (!prompt) { showToast('Prompt required', 'error'); return; }
+    try {
+      var res = await api('/api/hermes-cron/' + encodeURIComponent(profile) + '/create', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': state.csrfToken || '' },
+        body: JSON.stringify({ schedule: schedule, prompt: prompt, name: name, deliver: deliver, repeat: repeat }),
+      });
+      if (res.ok) { showToast('Cron job created', 'success'); overlay.remove(); setTimeout(function() { loadCronJobs(profile); }, 500); }
+      else { showToast(res.error || 'Create failed', 'error'); }
+    } catch (err) { showToast('Create failed: ' + err.message, 'error'); }
+  });
+}
+
 
 async function loadUsage(container) {
   container.innerHTML = `
