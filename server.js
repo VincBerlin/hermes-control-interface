@@ -2192,6 +2192,91 @@ app.get('/api/insights/:profile/:days', requireAuth, async (req, res) => {
   }
 });
 
+// ============================================
+// Hermes Cron (per-profile)
+// ============================================
+
+// Parse hermes cron list output into structured JSON
+function parseCronList(raw) {
+  const jobs = [];
+  const blocks = raw.split(/\n\s*(?=[a-f0-9]{12}\s)/);
+  for (const block of blocks) {
+    const idMatch = block.match(/^([a-f0-9]{12})\s+\[(\w+)\]/);
+    if (!idMatch) continue;
+    const nameMatch = block.match(/Name:\s+(.+)/);
+    const scheduleMatch = block.match(/Schedule:\s+(.+)/);
+    const repeatMatch = block.match(/Repeat:\s+(.+)/);
+    const nextMatch = block.match(/Next run:\s+(.+)/);
+    const deliverMatch = block.match(/Deliver:\s+(.+)/);
+    jobs.push({
+      id: idMatch[1],
+      status: idMatch[2],
+      name: nameMatch?.[1]?.trim() || '',
+      schedule: scheduleMatch?.[1]?.trim() || '',
+      repeat: repeatMatch?.[1]?.trim() || '',
+      nextRun: nextMatch?.[1]?.trim() || '',
+      deliver: deliverMatch?.[1]?.trim() || 'local',
+    });
+  }
+  return jobs;
+}
+
+// List jobs
+app.get('/api/hermes-cron/:profile', requireAuth, async (req, res) => {
+  try {
+    const profile = sanitizeProfileName(req.params.profile);
+    if (!profile) return res.status(400).json({ ok: false, error: 'invalid profile name' });
+    const [listRaw, statusRaw] = await Promise.all([
+      shell(`hermes -p ${profile} cron list --all 2>&1`, '10s'),
+      shell(`hermes -p ${profile} cron status 2>&1`, '10s'),
+    ]);
+    const jobs = parseCronList(listRaw);
+    const schedulerRunning = statusRaw.includes('running') || statusRaw.includes('active');
+    res.json({ ok: true, jobs, schedulerRunning, profile });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// Create job
+app.post('/api/hermes-cron/:profile/create', requireCsrf, async (req, res) => {
+  try {
+    const profile = sanitizeProfileName(req.params.profile);
+    if (!profile) return res.status(400).json({ ok: false, error: 'invalid profile name' });
+    const { schedule, prompt, name, deliver, repeat } = req.body || {};
+    if (!schedule) return res.status(400).json({ ok: false, error: 'schedule required' });
+    const args = ['-p', profile, 'cron', 'create'];
+    if (name) args.push('--name', name);
+    if (deliver) args.push('--deliver', deliver);
+    if (repeat && repeat !== 'forever') args.push('--repeat', String(repeat));
+    args.push(schedule);
+    if (prompt) args.push(prompt);
+    const output = await execHermes(args, 15000);
+    const idMatch = output.match(/Created job:\s+([a-f0-9]+)/);
+    addNotification('success', `Cron job created: ${name || idMatch?.[1] || schedule}`);
+    res.json({ ok: true, output, jobId: idMatch?.[1] });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// Pause/Resume/Run/Remove job
+app.post('/api/hermes-cron/:profile/:jobId/:action', requireCsrf, async (req, res) => {
+  try {
+    const profile = sanitizeProfileName(req.params.profile);
+    const jobId = req.params.jobId;
+    const action = req.params.action;
+    if (!profile) return res.status(400).json({ ok: false, error: 'invalid profile name' });
+    if (!/^[a-f0-9]+$/.test(jobId)) return res.status(400).json({ ok: false, error: 'invalid job id' });
+    if (!['pause', 'resume', 'run', 'remove'].includes(action)) return res.status(400).json({ ok: false, error: 'invalid action' });
+    const output = await execHermes(['-p', profile, 'cron', action, jobId], 10000);
+    addNotification('info', `Cron ${action}: ${jobId.slice(0, 8)}…`);
+    res.json({ ok: true, output });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Hermes Control Interface running on port ${PORT}`);
   console.log('Password gate: env-secret only');
