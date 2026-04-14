@@ -213,7 +213,7 @@ async function loadPage(page, params = {}) {
         container.innerHTML = `<div class="empty">Page not found</div>`;
     }
   } catch (err) {
-    container.innerHTML = `<div class="empty">Error loading page: ${err.message}</div>`;
+    container.innerHTML = `<div class="empty">Error loading page: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -296,7 +296,7 @@ async function loadHome(container) {
     loadTokenUsage('home-token-usage', 7);
 
   } catch (e) {
-    document.getElementById('home-cards').innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${e.message}</div></div>`;
+    document.getElementById('home-cards').innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${escapeHtml(e.message)}</div></div>`;
   }
 }
 
@@ -402,7 +402,7 @@ async function loadAgents(container) {
       grid.innerHTML = '<div class="card"><div class="card-title">No agents found</div><div class="stat-row"><span class="stat-label">Create your first agent profile to get started.</span></div></div>';
     }
   } catch (e) {
-    document.getElementById('agents-grid').innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${e.message}</div></div>`;
+    document.getElementById('agents-grid').innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${escapeHtml(e.message)}</div></div>`;
   }
 }
 
@@ -534,7 +534,7 @@ async function loadAgentDashboard(container, name) {
     `;
     loadTokenUsage(`agent-token-${name}`, 1);
   } catch (e) {
-    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${e.message}</div></div>`;
+    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${escapeHtml(e.message)}</div></div>`;
   }
 }
 
@@ -600,7 +600,7 @@ window.loadAgentSkills = async function(container, name) {
       </details>
     `;
   } catch (e) {
-    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${e.message}</div></div>`;
+    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${escapeHtml(e.message)}</div></div>`;
   }
 }
 
@@ -730,7 +730,7 @@ async function loadAgentSessions(container, name) {
     });
 
   } catch (e) {
-    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${e.message}</div></div>`;
+    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${escapeHtml(e.message)}</div></div>`;
   }
 }
 
@@ -847,8 +847,6 @@ async function loadXtermAndConnect(command) {
     term._fitAddon = fitAddon;
     termInstance = term;
 
-    term.write('Connecting...\r\n');
-
     // Ensure terminal session exists
     try {
       await api('/api/terminal/ensure', { method: 'POST' });
@@ -860,36 +858,47 @@ async function loadXtermAndConnect(command) {
     termWs = ws;
 
     let commandSent = false;
+    let transcriptReceived = false;
+
+    function sendCommand() {
+      if (commandSent || !command) return;
+      commandSent = true;
+      // Show Ctrl+C, then clear, then command — let user see each step
+      ws.send(JSON.stringify({ type: 'terminal-input', data: '\x03' }));
+      setTimeout(() => {
+        ws.send(JSON.stringify({ type: 'terminal-input', data: 'clear\r' }));
+        setTimeout(() => {
+          ws.send(JSON.stringify({ type: 'terminal-input', data: command + '\r' }));
+        }, 300);
+      }, 300);
+    }
 
     ws.onopen = () => {
-      term.write('Connected.\r\n');
-      // Send command after delay (wait for PTY ready)
-      setTimeout(() => {
-        if (command && !commandSent) {
-          // Step 1: Ctrl+C to cancel any running command
-          ws.send(JSON.stringify({ type: 'terminal-input', data: '\x03' }));
-          setTimeout(() => {
-            // Step 2: Clear terminal
-            ws.send(JSON.stringify({ type: 'terminal-input', data: 'clear\r' }));
-            setTimeout(() => {
-              // Step 3: Run actual command
-              term.write(`\x1b[90m$ ${command}\x1b[0m\r\n`);
-              ws.send(JSON.stringify({ type: 'terminal-input', data: command + '\r' }));
-              commandSent = true;
-            }, 500);
-          }, 500);
-        }
-      }, 2000);
+      term.write('Connecting...\r\n');
+      // Fallback: if no transcript in 1.5s, send command anyway
+      setTimeout(() => { if (!commandSent && command) sendCommand(); }, 1500);
     };
 
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === 'terminal-output' && msg.chunk) {
-          term.write(msg.chunk);
+          // Don't show output until command is sent (avoids init noise replay)
+          if (commandSent || !command) term.write(msg.chunk);
         }
-        if (msg.type === 'terminal-transcript' && msg.buffer) {
-          term.write(msg.buffer);
+        if (msg.type === 'terminal-transcript') {
+          if (!transcriptReceived) {
+            transcriptReceived = true;
+            if (command) {
+              // Opening with command — clear screen, show command, send
+              term.write('\x1b[2J\x1b[H');
+              term.write(`\x1b[90m$ ${command}\x1b[0m\r\n`);
+              sendCommand();
+            } else {
+              // Manual terminal — show transcript
+              if (msg.buffer) term.write(msg.buffer);
+            }
+          }
         }
       } catch {}
     };
@@ -930,7 +939,7 @@ async function loadXtermAndConnect(command) {
     observer.observe(document.body, { childList: true });
 
   } catch (e) {
-    bodyEl.innerHTML = `<div style="color:var(--red);padding:20px;">Failed to load terminal: ${e.message}</div>`;
+    bodyEl.innerHTML = `<div style="color:var(--red);padding:20px;">Failed to load terminal: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1054,7 +1063,7 @@ async function loadAgentGateway(container, name) {
     });
 
   } catch (e) {
-    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${e.message}</div></div>`;
+    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${escapeHtml(e.message)}</div></div>`;
   }
 }
 
@@ -1095,7 +1104,7 @@ async function loadGatewayLogs(name) {
       viewer.innerHTML = '<div class="empty">No logs available</div>';
     }
   } catch (e) {
-    viewer.innerHTML = `<div class="error-msg">${e.message}</div>`;
+    viewer.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1111,10 +1120,10 @@ async function gatewayAction(profile, action) {
       showToast(`Gateway ${action} successful`, 'success');
       loadAgentGateway(document.getElementById('agent-tab-content'), profile);
     } else {
-      showToast(`Gateway ${action} failed: ${res.error || 'Unknown error'}`, 'error');
+      showToast(`Gateway ${action} failed: ${escapeHtml(res.error || 'Unknown error')}`, 'error');
     }
   } catch (e) {
-    showToast(`Gateway ${action} failed: ${e.message}`, 'error');
+    showToast(`Gateway ${action} failed: ${escapeHtml(e.message)}`, 'error');
   }
 }
 
@@ -1128,7 +1137,7 @@ async function loadAgentConfig(container, name) {
   try {
     const res = await api(`/api/config/${name}`);
     if (!res.ok) {
-      container.innerHTML = `<div class="card"><div class="card-title">Config</div><div class="error-msg">${res.error || 'Failed to load config'}</div></div>`;
+      container.innerHTML = `<div class="card"><div class="card-title">Config</div><div class="error-msg">${escapeHtml(res.error || 'Failed to load config')}</div></div>`;
       return;
     }
 
@@ -1204,7 +1213,7 @@ async function loadAgentConfig(container, name) {
     });
 
   } catch (e) {
-    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${e.message}</div></div>`;
+    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${escapeHtml(e.message)}</div></div>`;
   }
 }
 
@@ -1303,7 +1312,7 @@ async function loadAgentMemory(container, name) {
       </div>
     `;
   } catch (e) {
-    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${e.message}</div></div>`;
+    container.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${escapeHtml(e.message)}</div></div>`;
   }
 }
 
@@ -1459,7 +1468,7 @@ async function loadUsage(container) {
     });
 
   } catch (e) {
-    document.getElementById('usage-overview').innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${e.message}</div></div>`;
+    document.getElementById('usage-overview').innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${escapeHtml(e.message)}</div></div>`;
   }
 }
 
@@ -1470,7 +1479,7 @@ async function fetchUsageData() {
   const res = await api(`/api/usage/${days}${query}`);
 
   if (!res.ok) {
-    document.getElementById('usage-overview').innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${res.error || 'Failed to load'}</div></div>`;
+    document.getElementById('usage-overview').innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${escapeHtml(res.error || 'Failed to load')}</div></div>`;
     return;
   }
 
@@ -1625,7 +1634,7 @@ async function loadSkills(container) {
 
       contentEl.innerHTML = html;
     } catch (e) {
-      contentEl.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${e.message}</div></div>`;
+      contentEl.innerHTML = `<div class="card"><div class="card-title">Error</div><div class="error-msg">${escapeHtml(e.message)}</div></div>`;
     }
   }
 
@@ -1669,7 +1678,7 @@ window.inspectSkill = async function(name) {
       </div>
     `;
   } catch (e) {
-    overlay.querySelector('.modal-card').innerHTML = `<div class="modal-title">Error</div><div class="error-msg">${e.message}</div><button class="btn btn-ghost" onclick="this.closest('.modal-overlay').remove()" style="margin-top:12px;">Close</button>`;
+    overlay.querySelector('.modal-card').innerHTML = `<div class="modal-title">Error</div><div class="error-msg">${escapeHtml(e.message)}</div><button class="btn btn-ghost" onclick="this.closest('.modal-overlay').remove()" style="margin-top:12px;">Close</button>`;
   }
 }
 
@@ -1731,7 +1740,7 @@ window.doInstallSkill = async function(skillName) {
       if (statusEl) statusEl.innerHTML = `<div style="color:var(--err);margin-top:8px;">❌ ${escapeHtml(res.output || res.error || 'Install failed')}</div>`;
     }
   } catch (e) {
-    if (statusEl) statusEl.innerHTML = `<div style="color:var(--err);margin-top:8px;">❌ ${e.message}</div>`;
+    if (statusEl) statusEl.innerHTML = `<div style="color:var(--err);margin-top:8px;">❌ ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1768,6 +1777,26 @@ async function loadMaintenance(container) {
           <button class="btn btn-ghost" onclick="runUpdate()">Update Hermes</button>
         </div>
         <div id="update-result" style="margin-top:8px;"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">HCI Control</div>
+        <div class="stat-row"><span class="stat-label">Restart this dashboard</span></div>
+        <div class="card-actions" style="margin-top:8px;">
+          <button class="btn btn-ghost" onclick="restartHCI()" style="border-color:var(--err);color:var(--err);">Restart HCI</button>
+        </div>
+        <div id="restart-result" style="margin-top:8px;"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Backup & Import</div>
+        <div class="stat-row"><span class="stat-label">Export or restore Hermes data</span></div>
+        <div class="card-actions" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost" onclick="createBackup()">Download Backup</button>
+          <label class="btn btn-ghost" style="cursor:pointer;margin:0;">
+            Import Backup
+            <input type="file" accept=".zip" onchange="importBackup(this)" style="display:none;">
+          </label>
+        </div>
+        <div id="backup-result" style="margin-top:8px;"></div>
       </div>
     </div>
     <div class="card-grid" style="margin-top:16px;" id="maintenance-users">
@@ -1825,7 +1854,7 @@ async function loadUsers() {
       el.innerHTML = '<div class="stat-row"><span class="stat-label">No users</span></div>';
     }
   } catch (e) {
-    document.getElementById('users-list').innerHTML = `<div class="error-msg">${e.message}</div>`;
+    document.getElementById('users-list').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -2003,7 +2032,7 @@ async function runDump() {
     const res = await api('/api/dump');
     el.innerHTML = `<pre style="font-size:10px;white-space:pre-wrap;max-height:300px;overflow-y:auto;color:var(--fg-muted);">${escapeHtml(res.output || 'No output')}</pre>`;
   } catch (e) {
-    el.innerHTML = `<div class="error-msg">${e.message}</div>`;
+    el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -2028,6 +2057,91 @@ async function runUpdate() {
     // Resume polling after update
     if (wasPolling) startNotifPolling();
   }
+}
+
+async function restartHCI() {
+  if (!await customConfirm('Restart HCI dashboard? You will be disconnected for a few seconds.')) return;
+  const el = document.getElementById('restart-result');
+  el.innerHTML = '<div class="loading">Restarting HCI...</div>';
+  try {
+    const csrfToken = state.csrfToken || '';
+    const res = await api('/api/hci-restart', {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': csrfToken },
+    });
+    if (res.ok) {
+      showToast('HCI restarting... reconnecting in 5s', 'success');
+      el.innerHTML = '<div style="color:var(--green);">Restarting... page will reload.</div>';
+      setTimeout(() => location.reload(), 5000);
+    } else {
+      el.innerHTML = `<div class="error-msg">${escapeHtml(res.error || 'Restart failed')}</div>`;
+    }
+  } catch (e) {
+    // Connection error expected — server is restarting
+    showToast('HCI restarting... reconnecting in 5s', 'success');
+    setTimeout(() => location.reload(), 5000);
+  }
+}
+
+async function createBackup() {
+  const el = document.getElementById('backup-result');
+  el.innerHTML = '<div class="loading">Creating backup...</div>';
+  try {
+    const csrfToken = state.csrfToken || '';
+    // Use fetch directly for binary download
+    const resp = await fetch('/api/backup', {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': csrfToken, 'Authorization': `Bearer ${state.token}` },
+    });
+    if (resp.headers.get('content-disposition')) {
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      // Extract filename from header or use default
+      const match = resp.headers.get('content-disposition').match(/filename="?(.+?)"?$/);
+      a.download = match ? match[1] : 'hermes-backup.zip';
+      a.click();
+      URL.revokeObjectURL(url);
+      el.innerHTML = '<div style="color:var(--green);">Backup downloaded.</div>';
+      showToast('Backup created', 'success');
+    } else {
+      const data = await resp.json();
+      el.innerHTML = `<div class="error-msg">${escapeHtml(data.error || 'Backup failed')}</div>`;
+    }
+  } catch (e) {
+    el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function importBackup(input) {
+  if (!input.files || !input.files[0]) return;
+  if (!await customConfirm(`Import backup from "${input.files[0].name}"? This will overwrite existing Hermes data.`)) {
+    input.value = '';
+    return;
+  }
+  const el = document.getElementById('backup-result');
+  el.innerHTML = '<div class="loading">Importing backup...</div>';
+  try {
+    const csrfToken = state.csrfToken || '';
+    const formData = new FormData();
+    formData.append('backup', input.files[0]);
+    const resp = await fetch('/api/import', {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': csrfToken, 'Authorization': `Bearer ${state.token}` },
+      body: formData,
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      el.innerHTML = `<pre style="font-size:11px;white-space:pre-wrap;color:var(--fg-muted);">${escapeHtml(data.output || 'Import complete')}</pre>`;
+      showToast('Backup imported', 'success');
+    } else {
+      el.innerHTML = `<div class="error-msg">${escapeHtml(data.error || 'Import failed')}</div>`;
+    }
+  } catch (e) {
+    el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+  }
+  input.value = '';
 }
 
 async function showCreateAgent() {
@@ -2127,7 +2241,7 @@ async function createUser(username, password, role) {
       showToast(`Failed: ${res.error}`, 'error');
     }
   } catch (e) {
-    showToast(`Failed: ${e.message}`, 'error');
+    showToast(`Failed: ${escapeHtml(e.message)}`, 'error');
   }
 }
 
@@ -2480,7 +2594,7 @@ async function loadFileExplorer(container, dirPath = '') {
     const treeEl = document.getElementById('file-tree');
 
     if (!res.ok) {
-      treeEl.innerHTML = `<div class="error-msg">${res.error || 'Failed to load'}</div>`;
+      treeEl.innerHTML = `<div class="error-msg">${escapeHtml(res.error || 'Failed to load')}</div>`;
       return;
     }
 
@@ -2510,7 +2624,7 @@ async function loadFileExplorer(container, dirPath = '') {
 
     treeEl.innerHTML = breadcrumb + (itemsHtml || '<div class="empty">Empty directory</div>');
   } catch (e) {
-    document.getElementById('file-tree').innerHTML = `<div class="error-msg">${e.message}</div>`;
+    document.getElementById('file-tree').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -2543,7 +2657,7 @@ async function openFileInEditor(filePath) {
       textEl.value = `Error: ${(res && res.error) || 'Could not read file'}\nPath: ${filePath}\n\nTroubleshooting:\n- Check server logs\n- Verify file exists: ls -la ~/.hermes/${filePath}`;
     }
   } catch (e) {
-    textEl.value = `Network error: ${e.message}`;
+    textEl.value = `Network error: ${escapeHtml(e.message)}`;
   }
 }
 
@@ -2681,5 +2795,8 @@ window.resumeSession = resumeSession;
 window.openTerminalPanel = openTerminalPanel;
 window.loadHome = loadHome;
 window.loadAgentDetail = loadAgentDetail;
+window.restartHCI = restartHCI;
+window.createBackup = createBackup;
+window.importBackup = importBackup;
 
 init();
