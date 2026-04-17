@@ -1025,7 +1025,7 @@ function getStateDbPath(profile) {
 }
 
 function loadSessionsFromDb(stateDbPath, limit = 250) {
-  if (!fs.existsSync(stateDbPath)) return { dbSessions: [], previewBySessionId: {} };
+  if (!fs.existsSync(stateDbPath)) return { dbSessions: [], previewBySessionId: {}, lastActivityBySessionId: {} };
 
   const db = new Database(stateDbPath, { readonly: true });
   try {
@@ -1052,7 +1052,19 @@ function loadSessionsFromDb(stateDbPath, limit = 250) {
       previewBySessionId[row.session_id] = row.content;
     }
 
-    return { dbSessions, previewBySessionId };
+    // Last activity per session (most recent message timestamp)
+    const lastActivityRows = db.prepare(`
+      SELECT session_id, MAX(timestamp) as last_activity
+      FROM messages
+      GROUP BY session_id
+    `).all();
+
+    const lastActivityBySessionId = {};
+    for (const row of lastActivityRows) {
+      lastActivityBySessionId[row.session_id] = row.last_activity;
+    }
+
+    return { dbSessions, previewBySessionId, lastActivityBySessionId };
   } finally {
     db.close();
   }
@@ -1069,11 +1081,12 @@ async function getAllSessions(profile) {
   if (raw) {
     const cliSessions = parseHermesSessionsList(raw);
     const stateDbPath = getStateDbPath(profile);
-    const { dbSessions, previewBySessionId } = loadSessionsFromDb(stateDbPath);
+    const { dbSessions, previewBySessionId, lastActivityBySessionId } = loadSessionsFromDb(stateDbPath);
     const data = mergeSessionsFromSources({
       cliSessions,
       dbSessions,
       previewBySessionId,
+      lastActivityBySessionId,
       nowMs: now,
     });
     hermesAllSessionsCache = { at: now, data, key: cacheKey };
@@ -1082,8 +1095,8 @@ async function getAllSessions(profile) {
 
   try {
     const stateDbPath = getStateDbPath(profile);
-    const { dbSessions, previewBySessionId } = loadSessionsFromDb(stateDbPath);
-    const data = mergeSessionsFromSources({ dbSessions, previewBySessionId, nowMs: now });
+    const { dbSessions, previewBySessionId, lastActivityBySessionId } = loadSessionsFromDb(stateDbPath);
+    const data = mergeSessionsFromSources({ dbSessions, previewBySessionId, lastActivityBySessionId, nowMs: now });
     if (data.length) {
       hermesAllSessionsCache = { at: now, data, key: cacheKey };
       return data;
