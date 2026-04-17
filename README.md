@@ -3,7 +3,7 @@
 A self-hosted web dashboard for the [Hermes AI agent](https://github.com/NousResearch/hermes-agent) stack. Manage terminals, files, sessions, cron jobs, token analytics, multi-agent gateways, and team access — all behind a password gate.
 
 **Stack:** Vanilla JS + Vite · Node.js · Express · WebSocket · xterm.js
-**Version:** 3.3.0
+**Version:** 3.3.2
 
 ---
 
@@ -513,6 +513,15 @@ If running via systemd, use `sudo systemctl restart hermes-control`.
 ---
 
 ## Changelog
+
+### v3.3.2 (2026-04-17)
+
+**🐛 Bug Fixes:**
+- **HTTP-only deployments:** Disable `upgrade-insecure-requests` CSP directive that broke UI on Tailscale/LAN/dev environments
+- **HOST env var:** Support `HOST` env var for non-localhost server binding (Tailscale IP, LAN, specific interface)
+
+**🤝 Contributors:**
+- @hifiguy — 2 fixes (HOST env + CSP HTTP fix)
 
 ### v3.3.0 (2026-04-17)
 
