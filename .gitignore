@@ -8,3 +8,8 @@ npm-debug.log*
 hermes_conversation_*.json
 dist/
 website/
+
+# Internal docs — not for public repo
+docs/BUSINESS_PLAN.md
+docs/ARCHITECTURE.md
+docs/SECURITY_AUDIT.md
