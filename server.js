@@ -3104,18 +3104,24 @@ app.post('/api/update', requireRole('admin'), (req, res) => {
   res.write(`data: ${JSON.stringify({ type: 'progress', line: 'Starting Hermes update...' })}\n\n`);
   audit(req.hciUser?.username || 'unknown', req.hciUser?.role || 'unknown', 'HERMES_UPDATE', 'started');
 
-  // Use expect to auto-answer prompts + get line-buffered PTY output
-  const expectScript = [
-    'set timeout 300',
-    'spawn hermes update --gateway',
-    'expect {',
-    '  -re {\\[Y/n\\]|\\[y/N\\]|\\[y/n\\]|\\(y/n\\)|\\(Y/n\\)} { send "Y\\r"; exp_continue }',
-    '  eof',
-    '}',
-  ].join('\n');
-  const proc = spawn('expect', ['-c', expectScript], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, HERMES_HOME: path.join(os.homedir(), '.hermes'), TERM: 'dumb' },
+  // hermes update --gateway uses file-based IPC for prompts (not stdin!)
+  // It writes ~/.hermes/.update_prompt.json and waits for ~/.hermes/.update_response
+  const hermesHome = path.join(os.homedir(), '.hermes');
+  const promptPath = path.join(hermesHome, '.update_prompt.json');
+  const responsePath = path.join(hermesHome, '.update_response');
+
+  // Watch for prompt file and auto-answer "Y"
+  const answerInterval = setInterval(() => {
+    try {
+      if (require('fs').existsSync(promptPath)) {
+        require('fs').writeFileSync(responsePath, 'Y');
+      }
+    } catch {}
+  }, 500);
+
+  const proc = spawn('script', ['-qfc', 'hermes update --gateway', '/dev/null'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, HERMES_HOME: hermesHome, TERM: 'dumb' },
   });
   let fullOutput = '';
   proc.stdout.on('data', (chunk) => {
@@ -3131,6 +3137,10 @@ app.post('/api/update', requireRole('admin'), (req, res) => {
     if (text.trim()) res.write(`data: ${JSON.stringify({ type: 'progress', line: text.trim() })}\n\n`);
   });
   proc.on('close', (code) => {
+    clearInterval(answerInterval);
+    // Clean up IPC files
+    try { require('fs').unlinkSync(promptPath); } catch {}
+    try { require('fs').unlinkSync(responsePath); } catch {}
     res.write(`data: ${JSON.stringify({ type: 'done', output: fullOutput.trim() })}\n\n`);
     res.end();
   });
