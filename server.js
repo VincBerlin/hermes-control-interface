@@ -2414,33 +2414,46 @@ app.get('/api/health', (req, res) => {
 });
 
 // HCI Update — git pull + npm install + build + auto-restart
-app.post('/api/hci/update', requireRole('admin'), async (req, res) => {
+app.post('/api/hci/update', requireRole('admin'), (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write(`data: ${JSON.stringify({ type: 'progress', line: 'Starting HCI update...' })}\n\n`);
+
   const HCI_DIR = path.join(__dirname);
   const steps = [
     { name: 'git pull', cmd: `cd ${HCI_DIR} && git pull --ff-only 2>&1` },
     { name: 'npm install', cmd: `cd ${HCI_DIR} && npm install 2>&1` },
     { name: 'build', cmd: `cd ${HCI_DIR} && npm run build 2>&1` },
   ];
-  const log = [];
-  try {
+
+  (async () => {
     for (const step of steps) {
-      log.push(`▸ ${step.name}...`);
-      const out = await shell(step.cmd, '60s');
-      log.push(out.trim() || '(no output)');
-      if (out.includes('error') || out.includes('ERROR') || out.includes('fatal')) {
-        throw new Error(`${step.name} failed`);
+      res.write(`data: ${JSON.stringify({ type: 'progress', line: `▸ ${step.name}...` })}\n\n`);
+      try {
+        const out = await shell(step.cmd, '120s');
+        const text = out.trim() || '(no output)';
+        text.split('\n').filter(l => l.trim()).forEach(line => {
+          res.write(`data: ${JSON.stringify({ type: 'progress', line: '  ' + line.trim() })}\n\n`);
+        });
+        if (out.includes('error') || out.includes('ERROR') || out.includes('fatal')) {
+          res.write(`data: ${JSON.stringify({ type: 'error', message: `${step.name} failed` })}\n\n`);
+          return res.end();
+        }
+      } catch (e) {
+        res.write(`data: ${JSON.stringify({ type: 'error', message: `${step.name} failed: ${e.message}` })}\n\n`);
+        return res.end();
       }
     }
-    log.push('▸ Update complete. Restarting in 3s...');
-    res.json({ ok: true, log: log.join('\n') });
-    // Restart: spawn delayed exit
-    setTimeout(() => {
-      console.log('[HCI] Update applied, restarting...');
-      process.exit(0); // restart.sh wrapper will pick this up
-    }, 3000);
-  } catch (e) {
-    res.json({ ok: false, error: e.message, log: log.join('\n') });
-  }
+    res.write(`data: ${JSON.stringify({ type: 'progress', line: '▸ Update complete. Restarting in 3s...' })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'done', message: 'Update complete, restarting...' })}\n\n`);
+    res.end();
+    setTimeout(() => { process.exit(0); }, 3000);
+  })();
 });
 
 // ============================================
@@ -2927,14 +2940,38 @@ app.post('/api/skills/check', requireAuth, async (req, res) => {
 });
 
 // Doctor
-app.post('/api/doctor', requireRole('admin'), async (req, res) => {
-  try {
-    const fix = req.body.fix ? '--fix' : '';
-    const output = await shell(`hermes doctor ${fix} 2>&1`, '120s');
-    res.json({ ok: true, output });
-  } catch (e) {
-    res.json({ ok: false, output: e.message });
-  }
+app.post('/api/doctor', requireRole('admin'), (req, res) => {
+  const fix = req.body.fix ? '--fix' : '';
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write(`data: ${JSON.stringify({ type: 'progress', line: fix ? 'Running diagnostics with auto-fix...' : 'Running diagnostics...' })}\n\n`);
+
+  const proc = spawn('script', ['-qfc', `hermes doctor ${fix}`, '/dev/null'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, HERMES_HOME: path.join(os.homedir(), '.hermes'), TERM: 'dumb' },
+  });
+  let fullOutput = '';
+  proc.stdout.on('data', (chunk) => {
+    const text = stripAnsi(chunk.toString());
+    fullOutput += text;
+    text.split('\n').filter(l => l.trim()).forEach(line => {
+      res.write(`data: ${JSON.stringify({ type: 'progress', line: line.trim() })}\n\n`);
+    });
+  });
+  proc.stderr.on('data', (chunk) => {
+    const text = stripAnsi(chunk.toString());
+    fullOutput += text;
+    if (text.trim()) res.write(`data: ${JSON.stringify({ type: 'progress', line: text.trim() })}\n\n`);
+  });
+  proc.on('close', (code) => {
+    res.write(`data: ${JSON.stringify({ type: 'done', output: fullOutput.trim() })}\n\n`);
+    res.end();
+  });
 });
 
 // ── Backup & Import ──
@@ -3056,14 +3093,38 @@ app.get('/api/dump', requireRole('admin'), async (req, res) => {
 });
 
 // Update
-app.post('/api/update', requireRole('admin'), async (req, res) => {
-  try {
-    const output = await shell('hermes update --gateway 2>&1', '300s');
-    audit(req.hciUser?.username || 'unknown', req.hciUser?.role || 'unknown', 'HERMES_UPDATE', 'started');
-    res.json({ ok: true, output });
-  } catch (e) {
-    res.json({ ok: false, output: e.message });
-  }
+app.post('/api/update', requireRole('admin'), (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write(`data: ${JSON.stringify({ type: 'progress', line: 'Starting Hermes update...' })}\n\n`);
+  audit(req.hciUser?.username || 'unknown', req.hciUser?.role || 'unknown', 'HERMES_UPDATE', 'started');
+
+  const proc = spawn('script', ['-qfc', 'hermes update --gateway', '/dev/null'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, HERMES_HOME: path.join(os.homedir(), '.hermes'), TERM: 'dumb' },
+  });
+  let fullOutput = '';
+  proc.stdout.on('data', (chunk) => {
+    const text = stripAnsi(chunk.toString());
+    fullOutput += text;
+    text.split('\n').filter(l => l.trim()).forEach(line => {
+      res.write(`data: ${JSON.stringify({ type: 'progress', line: line.trim() })}\n\n`);
+    });
+  });
+  proc.stderr.on('data', (chunk) => {
+    const text = stripAnsi(chunk.toString());
+    fullOutput += text;
+    if (text.trim()) res.write(`data: ${JSON.stringify({ type: 'progress', line: text.trim() })}\n\n`);
+  });
+  proc.on('close', (code) => {
+    res.write(`data: ${JSON.stringify({ type: 'done', output: fullOutput.trim() })}\n\n`);
+    res.end();
+  });
 });
 
 // Backup — create and download zip

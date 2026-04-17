@@ -873,30 +873,20 @@ async function hcirestart() {
 
 async function hciupdate() {
   if (!await customConfirm('Update HCI? This will git pull, npm install, and rebuild (~30s).', 'Update')) return;
-  try {
-    const csrfToken = state.csrfToken || '';
-    showToast('Updating HCI...', 'info');
-    const res = await api('/api/hci/update', { method: 'POST', headers: { 'X-CSRF-Token': csrfToken } });
-    if (res.ok) {
-      showToast('HCI updated! Restarting...', 'success');
-      setTimeout(() => location.reload(), 3000);
-    } else {
-      showToast('Update failed: ' + (res.error || 'unknown'), 'error');
-    }
-  } catch (e) { showToast('Update failed: ' + e.message, 'error'); }
+  await sseProgressModal('⬆ Updating HCI', '/api/hci/update', {
+    headers: { 'X-CSRF-Token': state.csrfToken || '' },
+    autoCloseMs: 2000,
+    onSuccess: () => { setTimeout(() => location.reload(), 4000); },
+  });
 }
 
 async function hcidoctor() {
-  if (!await customConfirm('Run health check? This will test all API endpoints.', 'Health Check')) return;
-  try {
-    showToast('Running health check...', 'info');
-    const res = await api('/api/doctor', { method: 'POST', headers: { 'X-CSRF-Token': state.csrfToken || '' } });
-    if (res.ok && res.output) {
-      await customAlert(res.output.substring(0, 2000), 'Health Check');
-    } else {
-      await customAlert(res.error || 'Health check completed', 'Health Check');
-    }
-  } catch (e) { showToast('Health check failed: ' + e.message, 'error'); }
+  if (!await customConfirm('Run diagnostics? This will check all Hermes components.', 'Diagnostics')) return;
+  await sseProgressModal('🩺 Running Diagnostics', '/api/doctor', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': state.csrfToken || '' },
+    autoCloseMs: 5000,
+  });
 }
 
 async function loadHomeAuth() {
@@ -1854,6 +1844,103 @@ async function gatewayAction(profile, action) {
     }
   } catch (e) {
     showToast(`Gateway ${action} failed: ${e.message}`, 'error');
+  }
+}
+
+// Generic SSE progress modal — opens modal, streams SSE, auto-closes
+async function sseProgressModal(title, url, options = {}) {
+  const { method = 'POST', headers = {}, body, autoCloseMs = 3000, onSuccess, onError } = options;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.display = 'flex';
+  overlay.innerHTML = `
+    <div class="modal-card" style="width:520px;max-width:90vw;">
+      <div class="modal-title">${title}</div>
+      <div class="sse-progress-log" style="margin:12px 0;font-family:var(--font-mono,monospace);font-size:12px;line-height:1.8;max-height:300px;overflow-y:auto;background:var(--bg-inset);border-radius:6px;padding:12px;color:var(--fg-muted);white-space:pre-wrap;"></div>
+      <div class="sse-progress-status" style="font-size:11px;color:var(--fg-muted);">Starting...</div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const logEl = overlay.querySelector('.sse-progress-log');
+  const statusEl = overlay.querySelector('.sse-progress-status');
+  const addLine = (text) => { logEl.textContent += text + '\n'; logEl.scrollTop = logEl.scrollHeight; };
+
+  try {
+    const fetchOpts = { method, headers, credentials: 'include' };
+    if (body) fetchOpts.body = body;
+    const res = await fetch(url, fetchOpts);
+
+    // Fallback for non-SSE responses (e.g. multer errors)
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const data = await res.json();
+      const errMsg = data.error || data.message || 'Failed';
+      statusEl.textContent = '❌ ' + errMsg;
+      statusEl.style.color = 'var(--danger)';
+      if (onError) onError(data);
+      setTimeout(() => overlay.remove(), 3000);
+      return;
+    }
+
+    // SSE streaming
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.type === 'progress') {
+            const text = data.line.replace(/\r/g, '');
+            statusEl.textContent = text;
+            statusEl.style.color = 'var(--accent)';
+            addLine(text);
+          } else if (data.type === 'done') {
+            statusEl.textContent = '✅ Complete!';
+            statusEl.style.color = 'var(--success)';
+            if (data.output) {
+              // Show summary lines
+              const summary = data.output.split('\n').filter(l =>
+                l.includes('complete') || l.includes('Complete') || l.includes('restored') ||
+                l.includes('Files:') || l.includes('Compressed:') || l.includes('Time:') ||
+                l.includes('Original:') || l.includes('Target:') || l.includes('Profile')
+              ).join('\n');
+              if (summary) addLine('\n' + summary);
+            }
+            if (data.message) addLine(data.message);
+            if (data.path) {
+              const a = document.createElement('a');
+              a.href = `/api/backup/download?path=${encodeURIComponent(data.path)}`;
+              a.download = data.filename || 'backup.zip';
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+            }
+            if (onSuccess) onSuccess(data);
+            setTimeout(() => overlay.remove(), autoCloseMs);
+          } else if (data.type === 'error') {
+            statusEl.textContent = '❌ ' + (data.message || 'Failed');
+            statusEl.style.color = 'var(--danger)';
+            if (data.output) addLine(data.output);
+            if (onError) onError(data);
+            setTimeout(() => overlay.remove(), 5000);
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    statusEl.textContent = '❌ Error: ' + e.message;
+    statusEl.style.color = 'var(--danger)';
+    setTimeout(() => overlay.remove(), 3000);
   }
 }
 
@@ -3027,89 +3114,12 @@ async function deleteUser(username) {
 
 async function createBackup() {
   if (!await customConfirm('Create a system backup? This may take a moment.', 'Create Backup')) return;
-
-  // Show progress modal
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.style.display = 'flex';
-  overlay.innerHTML = `
-    <div class="modal-card" style="width:520px;max-width:90vw;">
-      <div class="modal-title">📦 Creating Backup</div>
-      <div id="backup-progress" style="margin:12px 0;font-family:var(--font-mono,monospace);font-size:12px;line-height:1.8;max-height:300px;overflow-y:auto;background:var(--bg-inset);border-radius:6px;padding:12px;color:var(--fg-muted);white-space:pre-wrap;"></div>
-      <div id="backup-status" style="font-size:11px;color:var(--fg-muted);margin-bottom:8px;">Starting...</div>
-    </div>`;
-  document.body.appendChild(overlay);
-
-  const progressEl = document.getElementById('backup-progress');
-  const statusEl = document.getElementById('backup-status');
-
-  try {
-    const csrfToken = state.csrfToken || '';
-    const res = await fetch('/api/backup/create', {
-      method: 'POST',
-      headers: { 'X-CSRF-Token': csrfToken },
-      credentials: 'include',
-    });
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let lastLine = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const data = JSON.parse(line.slice(6));
-          if (data.type === 'progress') {
-            const text = data.line.replace(/\r/g, '');
-            // Parse progress like "500/6663 files ..."
-            if (text.includes('files')) {
-              lastLine = text;
-              statusEl.textContent = text;
-              statusEl.style.color = 'var(--accent)';
-            }
-            progressEl.textContent += text + '\n';
-            progressEl.scrollTop = progressEl.scrollHeight;
-          } else if (data.type === 'done') {
-            statusEl.textContent = '✅ Backup complete!';
-            statusEl.style.color = 'var(--success)';
-            // Show summary
-            const summary = data.output.split('\n').filter(l =>
-              l.includes('Backup complete') || l.includes('Files:') || l.includes('Compressed:') || l.includes('Time:') || l.includes('Original:')
-            ).join('\n');
-            if (summary) progressEl.textContent += '\n' + summary;
-            progressEl.scrollTop = progressEl.scrollHeight;
-            // Auto download
-            if (data.path) {
-              const a = document.createElement('a');
-              a.href = `/api/backup/download?path=${encodeURIComponent(data.path)}`;
-              a.download = data.filename || 'backup.zip';
-              document.body.appendChild(a);
-              a.click();
-              a.remove();
-            }
-            // Close modal after 3s
-            setTimeout(() => { overlay.remove(); showToast('Backup downloaded', 'success'); }, 3000);
-          } else if (data.type === 'error') {
-            statusEl.textContent = '❌ ' + (data.message || 'Backup failed');
-            statusEl.style.color = 'var(--danger)';
-            if (data.output) progressEl.textContent += '\n' + data.output;
-            setTimeout(() => overlay.remove(), 5000);
-          }
-        } catch {}
-      }
-    }
-  } catch (e) {
-    statusEl.textContent = '❌ Error: ' + e.message;
-    statusEl.style.color = 'var(--danger)';
-    setTimeout(() => overlay.remove(), 3000);
-  }
+  await sseProgressModal('📦 Creating Backup', '/api/backup/create', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': state.csrfToken || '' },
+    autoCloseMs: 3000,
+    onSuccess: () => { showToast('Backup downloaded', 'success'); },
+  });
 }
 
 async function importBackup(input) {
@@ -3118,92 +3128,16 @@ async function importBackup(input) {
   if (!file.name.endsWith('.zip')) return showToast('Please select a .zip file', 'error');
   if (!await customConfirm('Import backup? This will restore data from the backup file.', 'Import Backup')) { input.value = ''; return; }
 
-  // Show progress modal
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.style.display = 'flex';
-  overlay.innerHTML = `
-    <div class="modal-card" style="width:520px;max-width:90vw;">
-      <div class="modal-title">📥 Importing Backup</div>
-      <div style="font-size:11px;color:var(--fg-muted);margin-bottom:8px;">File: ${escapeHtml(file.name)} (${(file.size / 1024 / 1024).toFixed(1)} MB)</div>
-      <div id="import-progress" style="margin:12px 0;font-family:var(--font-mono,monospace);font-size:12px;line-height:1.8;max-height:300px;overflow-y:auto;background:var(--bg-inset);border-radius:6px;padding:12px;color:var(--fg-muted);white-space:pre-wrap;"></div>
-      <div id="import-status" style="font-size:11px;color:var(--fg-muted);margin-bottom:8px;">Uploading file...</div>
-    </div>`;
-  document.body.appendChild(overlay);
+  const formData = new FormData();
+  formData.append('backup', file);
 
-  const progressEl = document.getElementById('import-progress');
-  const statusEl = document.getElementById('import-status');
-
-  try {
-    const csrfToken = state.csrfToken || '';
-    const formData = new FormData();
-    formData.append('backup', file);
-    const res = await fetch('/api/backup/import', {
-      method: 'POST',
-      headers: { 'X-CSRF-Token': csrfToken },
-      body: formData,
-      credentials: 'include',
-    });
-
-    // Check if response is SSE or JSON (fallback for multer errors)
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      const data = await res.json();
-      statusEl.textContent = data.ok ? '✅ Import complete!' : '❌ ' + (data.error || 'Import failed');
-      statusEl.style.color = data.ok ? 'var(--success)' : 'var(--danger)';
-      setTimeout(() => overlay.remove(), 3000);
-      input.value = '';
-      return;
-    }
-
-    // SSE streaming
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const data = JSON.parse(line.slice(6));
-          if (data.type === 'progress') {
-            const text = data.line.replace(/\r/g, '');
-            if (text.includes('files')) {
-              statusEl.textContent = text;
-              statusEl.style.color = 'var(--accent)';
-            }
-            progressEl.textContent += text + '\n';
-            progressEl.scrollTop = progressEl.scrollHeight;
-          } else if (data.type === 'done') {
-            statusEl.textContent = '✅ Import complete!';
-            statusEl.style.color = 'var(--success)';
-            // Show summary
-            const summary = data.output.split('\n').filter(l =>
-              l.includes('Import complete') || l.includes('files restored') || l.includes('Target:') || l.includes('Profile')
-            ).join('\n');
-            if (summary) progressEl.textContent += '\n' + summary;
-            progressEl.scrollTop = progressEl.scrollHeight;
-            setTimeout(() => { overlay.remove(); showToast('Backup imported successfully', 'success'); }, 4000);
-          } else if (data.type === 'error') {
-            statusEl.textContent = '❌ ' + (data.message || 'Import failed');
-            statusEl.style.color = 'var(--danger)';
-            if (data.output) progressEl.textContent += '\n' + data.output;
-            setTimeout(() => overlay.remove(), 5000);
-          }
-        } catch {}
-      }
-    }
-  } catch (e) {
-    statusEl.textContent = '❌ Error: ' + e.message;
-    statusEl.style.color = 'var(--danger)';
-    setTimeout(() => overlay.remove(), 3000);
-  }
+  await sseProgressModal('📥 Importing Backup', '/api/backup/import', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': state.csrfToken || '' },
+    body: formData,
+    autoCloseMs: 4000,
+    onSuccess: () => { showToast('Backup imported successfully', 'success'); },
+  });
   input.value = '';
 }
 
@@ -3403,25 +3337,16 @@ async function runDump() {
 
 async function runUpdate() {
   if (!await customConfirm('Update Hermes? This may take a minute.')) return;
-  const el = document.getElementById('update-result');
-  el.innerHTML = '<div class="loading">Updating...</div>';
   // Pause notification polling during update to avoid false network errors
   const wasPolling = state.notifInterval;
   if (state.notifInterval) { clearInterval(state.notifInterval); state.notifInterval = null; }
-  try {
-    const csrfToken = state.csrfToken || '';
-    const res = await api('/api/update', {
-      method: 'POST',
-      headers: { 'X-CSRF-Token': csrfToken },
-    });
-    el.innerHTML = `<pre style="font-size:11px;white-space:pre-wrap;color:var(--fg-muted);">${escapeHtml(res.output || 'Update started')}</pre>`;
-    showToast('Hermes update complete', 'success');
-  } catch (e) {
-    el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
-  } finally {
-    // Resume polling after update
-    if (wasPolling) startNotifPolling();
-  }
+  await sseProgressModal('⬆ Updating Hermes', '/api/update', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': state.csrfToken || '' },
+    autoCloseMs: 3000,
+    onSuccess: () => { if (wasPolling) startNotifPolling(); },
+    onError: () => { if (wasPolling) startNotifPolling(); },
+  });
 }
 
 async function showCreateAgent() {
