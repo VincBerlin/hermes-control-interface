@@ -261,43 +261,70 @@ async function loadChat(container) {
 
   container.innerHTML = `
     <style>
-      .chat-layout { display: flex; height: calc(100vh - 56px - 48px); margin: -24px; }
-      .chat-sidebar { width: 280px; min-width: 280px; background: var(--bg-panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: transform 0.3s ease, width 0.3s ease, min-width 0.3s ease, padding 0.3s ease; overflow: hidden; flex-shrink: 0; }
+      .chat-layout { display: flex; height: calc(100vh - 56px - 48px); margin: -24px; overflow: hidden; }
+      .chat-sidebar { width: 280px; min-width: 280px; background: var(--bg-panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: transform 0.3s ease, width 0.3s ease, min-width 0.3s ease, padding 0.3s ease; overflow: hidden; flex-shrink: 0; height: 100%; }
       .chat-sidebar.collapsed { transform: translateX(-100%); width: 0; min-width: 0; padding: 0; border: none; }
-      .chat-sidebar-header { padding: 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
-      .chat-sidebar-list { flex: 1; overflow-y: auto; padding: 8px; }
+      .chat-sidebar-header { padding: 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+      .chat-sidebar-list { flex: 1; overflow-y: auto; padding: 8px; min-height: 0; }
       .chat-session-item { padding: 8px 10px; border-radius: var(--radius); cursor: pointer; font-size: 12px; color: var(--fg-muted); transition: background var(--transition); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .chat-session-item:hover { background: var(--bg-panel-hover); color: var(--fg); }
       .chat-session-item.active { background: var(--bg-panel); border: 1px solid var(--border); color: var(--fg); }
-      .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+      .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; height: 100%; }
       .chat-header { padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; background: var(--bg-base); flex-shrink: 0; }
       .chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
       .chat-status-bar { font-size: 10px; color: var(--fg-subtle); display: flex; gap: 12px; padding: 4px 16px; border-bottom: 1px solid var(--border); background: var(--bg-inset); flex-shrink: 0; }
       .chat-input-area { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end; background: var(--bg-base); flex-shrink: 0; }
-      #chat-input { flex: 1; resize: none; max-height: 120px; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--fg); font-family: var(--font); font-size: 13px; outline: none; }
+      #chat-input { flex: 1; resize: none; max-height: 120px; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--fg); font-family: var(--font); font-size: 14px; outline: none; }
       #chat-input:focus { border-color: var(--fg); }
+      #chat-input::placeholder { color: var(--fg-muted); font-size: 14px; }
       .chat-sidebar-backdrop { display: none; position: fixed; inset: 56px 0 0 0; background: rgba(0,0,0,0.5); z-index: 99; }
       .chat-sidebar-toggle { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; background: transparent; border: 1px solid var(--border); border-radius: var(--radius); color: var(--fg); cursor: pointer; z-index: 101; }
       .chat-sidebar-toggle:hover { background: var(--bg-input); }
       .icon-btn { padding: 0; background: transparent; border: none; color: var(--fg); cursor: pointer; border-radius: var(--radius); }
       #chat-profile { width:100%;margin:0;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--fg);font-family:var(--font);font-size:13px;outline:none;cursor:pointer; }
       #chat-profile:focus { border-color: var(--gold, #ffac02); }
-      #chat-session-search { width:100%;margin:6px 0 0 0;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--fg);font-family:var(--font);font-size:12px;outline:none; }
-      #chat-session-search::placeholder { color: var(--fg-muted); }
+      #chat-session-search { width:100%;margin:6px 0 0 0;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--fg);font-family:var(--font);font-size:13px;outline:none; }
+      #chat-session-search::placeholder { color: var(--fg-muted); font-size: 13px; }
+      /* Tool call cards */
+      .tool-call-card { margin: 6px 0; border-radius: 8px; background: var(--bg-input, #1a1a2e); border-left: 3px solid var(--gold, #ffac02); padding: 0; font-size: 13px; overflow: hidden; }
+      .tool-card-header { display: flex; align-items: center; gap: 6px; padding: 8px 10px; cursor: pointer; user-select: none; }
+      .tool-card-header:hover { background: rgba(255,255,255,0.03); }
+      .tool-card-icon { font-size: 12px; }
+      .tool-card-name { font-weight: 600; font-size: 12px; color: var(--gold, #ffac02); flex: 1; }
+      .tool-card-status { font-size: 10px; padding: 1px 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+      .tool-card-status.running { background: rgba(255,172,2,0.15); color: var(--gold, #ffac02); }
+      .tool-card-status.done { background: rgba(52,211,153,0.15); color: #34d399; }
+      .tool-card-status.error { background: rgba(255,107,107,0.15); color: #ff6b6b; }
+      .tool-card-chevron { font-size: 10px; color: var(--fg-subtle); transition: transform 0.2s; }
+      .tool-card-body { max-height: 0; overflow: hidden; transition: max-height 0.25s ease; }
+      .tool-call-card.expanded .tool-card-body { max-height: 600px; overflow-y: auto; }
+      .tool-call-card.expanded .tool-card-chevron { transform: rotate(90deg); }
+      .tool-card-args { padding: 6px 10px; border-top: 1px solid var(--border); }
+      .tool-card-args code { font-size: 11px; color: var(--fg-subtle); white-space: pre-wrap; word-break: break-all; display: block; }
+      .tool-card-preview { padding: 4px 10px; font-size: 11px; color: var(--fg-subtle); }
+      .tool-card-result { padding: 6px 10px; border-top: 1px solid var(--border); }
+      .tool-card-result pre { margin: 4px 0; font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto; color: var(--fg-muted); }
+      /* Blink animation */
+      @keyframes blink { 0%,50% { opacity:1; } 51%,100% { opacity:0; } }
+      .chat-cursor { animation: blink 1s infinite; }
+      /* Mobile */
       @media (max-width: 768px) {
         .chat-sidebar { position: fixed; left: 0; top: 56px; height: calc(100vh - 56px); z-index: 100; width: 85vw; max-width: 360px; box-shadow: 4px 0 24px rgba(0,0,0,0.5); }
         .chat-sidebar.collapsed { transform: translateX(-100%); }
         .chat-sidebar-backdrop.active { display: block; }
         .chat-layout { margin: -12px; height: calc(100vh - 56px - 48px); }
         .chat-header { position: relative; z-index: 102; }
-        .chat-main { min-width: 0; }
         .chat-input-area { padding: 8px 12px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
-        #chat-input { font-size: 16px !important; } /* Prevent iOS auto-zoom */
-        .chat-session-item { min-height: 56px; padding: 12px 14px; }
+        #chat-input { font-size: 16px !important; }
+        #chat-input::placeholder { font-size: 16px !important; }
+        #chat-session-search { font-size: 16px !important; }
+        #chat-session-search::placeholder { font-size: 16px !important; }
+        #chat-profile { font-size: 16px !important; }
+        .chat-session-item { min-height: 48px; padding: 10px 14px; }
         #chat-stop-btn { font-size: 14px; padding: 6px 14px; }
       }
       @media (max-width: 480px) {
-        .chat-sidebar { width: 100vw; min-width: 100vw; }
+        .chat-sidebar { width: 100vw; min-width: 100vw; max-width: 100vw; }
       }
      </style>
     <div class="chat-layout">
@@ -663,6 +690,24 @@ async function deleteChatSession(sessionId = 0) {
   } catch (e) { showToast('Delete failed: ' + e.message, 'error'); }
 }
 
+// ── Update chat header with session info ──
+function updateChatHeader() {
+  const sid = state._currentChatSession;
+  const titleEl = document.getElementById('chat-title');
+  const subtitleEl = document.getElementById('chat-subtitle');
+  const profile = document.getElementById('chat-profile')?.value || 'default';
+  if (!sid) {
+    if (titleEl) titleEl.textContent = 'New Chat';
+    if (subtitleEl) subtitleEl.textContent = profile !== 'default' ? `Profile: ${profile}` : '';
+    return;
+  }
+  // Find session title from sidebar
+  const item = document.querySelector(`.chat-session-item[data-sid="${sid}"]`);
+  const sidebarTitle = item?.dataset?.title || '';
+  if (titleEl) titleEl.textContent = sidebarTitle || sid.substring(0, 20) + '...';
+  if (subtitleEl) subtitleEl.textContent = `${profile !== 'default' ? profile + ' · ' : ''}${sid.substring(0, 16)}`;
+}
+
 async function sendChatMessage() {
   if (state._chatLock) return;
   const input = document.getElementById('chat-input');
@@ -695,20 +740,34 @@ async function sendChatMessage() {
   if (btn) { btn.disabled = true; btn.style.display = 'none'; }
   if (stopBtn) stopBtn.style.display = 'inline-flex';
   try {
-    // Try Gateway API first
-    await sendViaGatewayAPI(text, profile, sessionId, contentDiv, messagesDiv, startTime);
-  } catch (gwErr) {
-    console.warn('[Chat] Gateway API failed, falling back to CLI:', gwErr.message);
-    // Fallback: clear streaming div and try CLI
-    try {
+    // Use Gateway API for default profile, CLI for other profiles
+    if (profile === 'default' || !profile) {
+      await sendViaGatewayAPI(text, profile, sessionId, contentDiv, messagesDiv, startTime);
+    } else {
       await sendViaCLI(text, profile, sessionId, contentDiv, messagesDiv, startTime);
+    }
+  } catch (gwErr) {
+    console.warn('[Chat] Primary method failed, trying fallback:', gwErr.message);
+    try {
+      // Fallback: Gateway → CLI or CLI → Gateway
+      if (profile === 'default' || !profile) {
+        await sendViaCLI(text, profile, sessionId, contentDiv, messagesDiv, startTime);
+      } else {
+        await sendViaGatewayAPI(text, profile, sessionId, contentDiv, messagesDiv, startTime);
+      }
     } catch (cliErr) {
       if (contentDiv) contentDiv.innerHTML = renderChatContent(fullContent) + '<div style="color:var(--red);margin-top:8px;">Error: ' + escapeHtml(cliErr.message) + '</div>';
     }
   } finally {
     state._chatLock = false;
+    state._currentStreamReader = null;
     if (btn) { btn.disabled = false; btn.textContent = 'Send'; btn.style.display = ''; }
     if (stopBtn) stopBtn.style.display = 'none';
+    // Remove lingering cursor
+    const cursors = contentDiv?.querySelectorAll('.chat-cursor');
+    cursors?.forEach(c => c.remove());
+    // Update session title from sidebar
+    updateChatHeader();
   }
 }
 
@@ -778,7 +837,7 @@ async function sendViaGatewayAPI(text, profile, sessionId, contentDiv, messagesD
     console.log('[Chat] stream ended:', readErr.message);
   }
 
-  // Finalize
+  // Finalize — remove cursor, show elapsed
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   updateStreamContent(contentDiv, fullContent, toolCards, null, elapsed);
   const stats = document.getElementById('chat-status-session');
@@ -786,7 +845,10 @@ async function sendViaGatewayAPI(text, profile, sessionId, contentDiv, messagesD
   if (stats) stats.textContent = state._currentChatSession || '—';
   if (elapsedEl) elapsedEl.textContent = elapsed + 's';
   state._currentStreamReader = null;
-  refreshChatSidebar();
+  // Remove any remaining cursors
+  contentDiv?.querySelectorAll('.chat-cursor').forEach(c => c.remove());
+  await refreshChatSidebar();
+  updateChatHeader();
 }function handleGatewayEvent(evt, contentDiv, messagesDiv, toolCards) {
   const t = evt.type;
   if (t === 'response.output_text.delta') {
@@ -859,7 +921,9 @@ async function sendViaCLI(text, profile, sessionId, contentDiv, messagesDiv, sta
   }
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   if (contentDiv) contentDiv.innerHTML = renderChatContent(fullContent) + '<div style="font-size:10px;color:var(--fg-subtle);margin-top:8px;">' + elapsed + 's</div>';
-  refreshChatSidebar();
+  contentDiv?.querySelectorAll('.chat-cursor').forEach(c => c.remove());
+  await refreshChatSidebar();
+  updateChatHeader();
 }
 
 // ── Tool Call Card Rendering ──
@@ -867,15 +931,20 @@ function addToolCallCard(contentDiv, callId, name, args) {
   const card = document.createElement('div');
   card.className = 'tool-call-card';
   card.id = `tool-card-${callId}`;
+  const argsStr = typeof args === 'string' ? args : JSON.stringify(args, null, 2);
+  const argsPreview = argsStr.substring(0, 150) + (argsStr.length > 150 ? '...' : '');
   card.innerHTML = `
-    <div class="tool-card-header">
+    <div class="tool-card-header" onclick="this.parentElement.classList.toggle('expanded')">
       <span class="tool-card-icon">🔧</span>
       <span class="tool-card-name">${escapeHtml(name || 'tool')}</span>
       <span class="tool-card-status running">running</span>
+      <span class="tool-card-chevron">▶</span>
     </div>
-    <div class="tool-card-args"><code>${escapeHtml(typeof args === 'string' ? args : JSON.stringify(args, null, 2).substring(0, 300))}</code></div>
-    <div class="tool-card-preview" id="tool-preview-${callId}"></div>
-    <div class="tool-card-result" id="tool-result-${callId}"></div>`;
+    <div class="tool-card-body">
+      <div class="tool-card-args"><code>${escapeHtml(argsPreview)}</code></div>
+      <div class="tool-card-preview" id="tool-preview-${callId}"></div>
+      <div class="tool-card-result" id="tool-result-${callId}"></div>
+    </div>`;
   // Insert before cursor
   const cursor = contentDiv.querySelector('.chat-cursor');
   if (cursor) {
@@ -898,10 +967,12 @@ function finalizeToolCard(toolCards, callId, result) {
   if (!el) return;
   const statusEl = el.querySelector('.tool-card-status');
   if (statusEl) { statusEl.textContent = 'done'; statusEl.className = 'tool-card-status done'; }
+  // Auto-expand when result arrives
+  el.classList.add('expanded');
   const resultEl = el.querySelector(`#tool-result-${callId}`) || el.querySelector('.tool-card-result');
   if (resultEl && result) {
     const display = typeof result === 'string' ? result.substring(0, 500) : JSON.stringify(result).substring(0, 500);
-    resultEl.innerHTML = `<details><summary>Result</summary><pre style="margin:4px 0;font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto;">${escapeHtml(display)}</pre></details>`;
+    resultEl.innerHTML = `<pre>${escapeHtml(display)}</pre>`;
   }
 }
 
