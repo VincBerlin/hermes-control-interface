@@ -3104,7 +3104,7 @@ app.post('/api/update', requireRole('admin'), (req, res) => {
   res.write(`data: ${JSON.stringify({ type: 'progress', line: 'Starting Hermes update...' })}\n\n`);
   audit(req.hciUser?.username || 'unknown', req.hciUser?.role || 'unknown', 'HERMES_UPDATE', 'started');
 
-  const proc = spawn('script', ['-qfc', 'hermes update --gateway', '/dev/null'], {
+  const proc = spawn('script', ['-qfc', 'yes | hermes update --gateway', '/dev/null'], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, HERMES_HOME: path.join(os.homedir(), '.hermes'), TERM: 'dumb' },
   });
