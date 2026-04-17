@@ -2893,7 +2893,7 @@ async function loadMaintenance(container) {
     <div class="page-header">
       <div>
         <div class="page-title">Maintenance</div>
-        <div class="page-subtitle">System tools, diagnostics, and user management</div>
+        <div class="page-subtitle">System tools and diagnostics</div>
       </div>
     </div>
     <div class="card-grid" id="maintenance-grid">
@@ -2951,19 +2951,7 @@ async function loadMaintenance(container) {
         <div class="stat-row"><span class="stat-label">Twitter</span><span class="stat-value"><a href="https://x.com/bayendor" target="_blank" style="color:var(--accent);text-decoration:none;">@bayendor</a></span></div>
       </div>
     </div>
-    <div class="card-grid" style="margin-top:16px;" id="maintenance-users">
-      <div class="card">
-        <div class="card-title">HCI Users</div>
-        <div id="users-list"><div class="loading">Loading users...</div></div>
-        <div class="card-actions" style="margin-top:8px;">
-          <button class="btn btn-ghost" onclick="showCreateUser()">+ Create User</button>
-        </div>
-      </div>
-    </div>
   `;
-
-  // Load users
-  loadUsers();
 
   // Load version
   try {
