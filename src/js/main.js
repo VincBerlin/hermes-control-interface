@@ -2,6 +2,7 @@
    HCI Main Entry Point
    ============================================ */
 import { Chart, registerables } from 'chart.js';
+import { toDisplayText } from './chat-render-utils.mjs';
 Chart.register(...registerables);
 
 // State
@@ -10,10 +11,12 @@ const state = {
   page: 'home',
   theme: localStorage.getItem('hci-theme') || 'dark',
   notifications: [],
+  notifDisplayLimit: 5,
   notifInterval: null,
   notifFailCount: 0,
   _currentChatSession: null,
   chatSidebarOpen: localStorage.getItem('hci-chat-sidebar') !== 'false',
+  auditDisplayLimit: 15,
 };
 
 // ============================================
@@ -92,6 +95,11 @@ function updateUserMenu() {
   if (!state.user) return;
   document.getElementById('user-name').textContent = state.user.username;
   document.getElementById('user-role').textContent = state.user.role;
+  // Show User Management button for admin only
+  const btn = document.getElementById('users-mgmt-btn');
+  if (btn) {
+    btn.style.display = hasPerm('users.manage') ? 'block' : 'none';
+  }
 }
 
 // Login form
@@ -167,6 +175,10 @@ document.getElementById('setup-form')?.addEventListener('submit', async (e) => {
 // Navigation
 // ============================================
 function navigate(page, params = {}) {
+  // Cleanup previous page resources
+  stopLogsAutoRefresh();
+  if (state._logsDebounce) { clearTimeout(state._logsDebounce); state._logsDebounce = null; }
+
   state.page = page;
 
   // Update nav active state
@@ -215,6 +227,9 @@ async function loadPage(page, params = {}) {
         break;
       case 'chat':
         await loadChat(container);
+        break;
+      case 'users':
+        await loadUsersPage(container);
         break;
       case 'logs':
         await loadLogs(container);
@@ -388,7 +403,7 @@ async function refreshChatSidebar() {
 
     const currentSid = state._currentChatSession;
     listEl.innerHTML = sessions.slice(0, 50).map(s => {
-      const title = (s.title && s.title !== '—') ? s.title : s.id;
+      const title = toDisplayText((s.title && s.title !== '—') ? s.title : s.id);
       const isActive = s.id == currentSid;
       const msgs = s.messageCount || s.message_count || 0;
       const model = s.model || '';
@@ -425,7 +440,7 @@ async function loadChatSession(sessionId) {
     const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages?profile=${encodeURIComponent(profile)}`, { credentials: 'include' });
     if (!r.ok) { container.innerHTML = '<div class="error-msg">Failed to load messages</div>'; return; }
     const data = await r.json();
-    if (titleEl) titleEl.textContent = data.title || ('Session ' + sessionId);
+    if (titleEl) titleEl.textContent = toDisplayText(data.title ?? ('Session ' + sessionId));
     if (subtitleEl) subtitleEl.textContent = `${data.messages?.length || 0} messages · ${profile}`;
 
     // Token info
@@ -499,20 +514,20 @@ function renderChatMessage(msg) {
   if (role === 'tool') {
     const contentDiv = document.createElement('div');
     contentDiv.style.cssText = 'font-size:12px;line-height:1.6;color:var(--fg);white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;background:var(--bg-panel);padding:8px;border-radius:6px;';
-    let content = msg.content || '';
+    let content = msg.content;
     try {
       const parsed = JSON.parse(content);
       if (parsed.summary) content = parsed.summary;
       else if (parsed.results) content = JSON.stringify(parsed.results, null, 2);
       else content = JSON.stringify(parsed, null, 2);
     } catch {}
-    contentDiv.textContent = content.substring(0, 2000);
+    contentDiv.textContent = toDisplayText(content).substring(0, 2000);
     div.appendChild(contentDiv);
     return div;
   }
 
   // Content
-  let content = msg.content || '';
+  let content = toDisplayText(msg.content);
   content = content.replace(/^Resume this session with:.*$/gm, '');
   content = content.replace(/^Session:\s*\d+.*$/gm, '');
   content = content.replace(/^Duration:.*$/gm, '');
@@ -530,7 +545,7 @@ function renderChatMessage(msg) {
   if (msg.reasoning) {
     const rd = document.createElement('details');
     rd.style.cssText = 'margin-top:8px;';
-    rd.innerHTML = `<summary style="cursor:pointer;font-size:11px;color:var(--fg-subtle);">💭 Reasoning</summary><div style="font-size:11px;color:var(--fg-muted);line-height:1.5;white-space:pre-wrap;padding:6px;background:var(--bg-panel);border-radius:4px;margin-top:4px;max-height:150px;overflow-y:auto;">${escapeHtml(msg.reasoning.substring(0, 2000))}</div>`;
+    rd.innerHTML = `<summary style="cursor:pointer;font-size:11px;color:var(--fg-subtle);">💭 Reasoning</summary><div style="font-size:11px;color:var(--fg-muted);line-height:1.5;white-space:pre-wrap;padding:6px;background:var(--bg-panel);border-radius:4px;margin-top:4px;max-height:150px;overflow-y:auto;">${escapeHtml(toDisplayText(msg.reasoning).substring(0, 2000))}</div>`;
     div.appendChild(rd);
   }
 
@@ -705,7 +720,7 @@ async function sendChatMessage() {
 
 function renderChatContent(text) {
   // Simple markdown-like rendering: code blocks, bold, line breaks
-  let html = escapeHtml(text);
+  let html = escapeHtml(toDisplayText(text));
   // Code blocks ```...```
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre style="background:var(--bg-panel);padding:8px;border-radius:4px;overflow-x:auto;font-size:12px;margin:6px 0;"><code>$2</code></pre>');
   // Inline code
@@ -858,29 +873,20 @@ async function hcirestart() {
 
 async function hciupdate() {
   if (!await customConfirm('Update HCI? This will git pull, npm install, and rebuild (~30s).', 'Update')) return;
-  try {
-    const csrfToken = state.csrfToken || '';
-    showToast('Updating HCI...', 'info');
-    const res = await api('/api/hci/update', { method: 'POST', headers: { 'X-CSRF-Token': csrfToken } });
-    if (res.ok) {
-      showToast('HCI updated! Restarting...', 'success');
-      setTimeout(() => location.reload(), 3000);
-    } else {
-      showToast('Update failed: ' + (res.error || 'unknown'), 'error');
-    }
-  } catch (e) { showToast('Update failed: ' + e.message, 'error'); }
+  await sseProgressModal('⬆ Updating HCI', '/api/hci/update', {
+    headers: { 'X-CSRF-Token': state.csrfToken || '' },
+    autoCloseMs: 2000,
+    onSuccess: () => { setTimeout(() => location.reload(), 4000); },
+  });
 }
 
 async function hcidoctor() {
-  try {
-    showToast('Running health check...', 'info');
-    const res = await api('/api/doctor', { method: 'POST', headers: { 'X-CSRF-Token': state.csrfToken || '' } });
-    if (res.ok && res.output) {
-      await customAlert(res.output.substring(0, 2000), 'Health Check');
-    } else {
-      await customAlert(res.error || 'Health check completed', 'Health Check');
-    }
-  } catch (e) { showToast('Health check failed: ' + e.message, 'error'); }
+  if (!await customConfirm('Run diagnostics? This will check all Hermes components.', 'Diagnostics')) return;
+  await sseProgressModal('🩺 Running Diagnostics', '/api/doctor', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': state.csrfToken || '' },
+    autoCloseMs: 5000,
+  });
 }
 
 async function loadHomeAuth() {
@@ -1030,6 +1036,7 @@ async function deleteAgent(name) {
 }
 
 async function setAgentDefault(name) {
+  if (!await customConfirm(`Set "${name}" as default profile?`, 'Set Default')) return;
   try {
     const csrfToken = state.csrfToken || '';
     await api('/api/profiles/use', {
@@ -1209,6 +1216,7 @@ window.loadAgentSkills = async function(container, name) {
 }
 
 window.updateSkill = async function(skillName, profile) {
+  if (!await customConfirm(`Update skill "${skillName}" on ${profile}?`, 'Update Skill')) return;
   try {
     const res = await api('/api/skills/update', { method: 'POST', body: JSON.stringify({ skill: skillName, profile }) });
     showToast(res.ok ? 'Skill updated!' : (res.output || 'Update failed'), res.ok ? 'success' : 'error');
@@ -1325,11 +1333,12 @@ async function loadAgentSessions(container, name) {
 
   function renderSessions(filter = '') {
     const sessions = state.currentSessions || [];
-    const filtered = filter
+    const filterText = toDisplayText(filter).toLowerCase();
+    const filtered = filterText
       ? sessions.filter(s =>
-          (s.title || '').toLowerCase().includes(filter) ||
-          (s.id || '').toLowerCase().includes(filter) ||
-          (s.source || '').toLowerCase().includes(filter)
+          toDisplayText(s.title).toLowerCase().includes(filterText) ||
+          toDisplayText(s.id).toLowerCase().includes(filterText) ||
+          toDisplayText(s.source).toLowerCase().includes(filterText)
         )
       : sessions;
 
@@ -1460,7 +1469,7 @@ async function toggleSessionDetail(btn, sessionId, profile) {
       };
       const rc = roleColors[m.role] || roleColors.system;
       const ts = m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-      let content = m.content || '';
+      let content = toDisplayText(m.content);
       content = content.replace(/Resume this session with:.*$/gm, '');
       content = content.replace(/^Session:\s*\d+.*$/gm, '');
       content = content.replace(/^Duration:.*$/gm, '');
@@ -1704,6 +1713,7 @@ async function renameSession(sessionId, profileName) {
 }
 
 async function exportSession(sessionId) {
+  if (!await customConfirm(`Export session ${sessionId} as JSON?`, 'Export Session')) return;
   try {
     const res = await api(`/api/sessions/${sessionId}/export`);
     if (res.ok) {
@@ -1818,7 +1828,8 @@ async function loadGatewayLogs(name) {
 }
 
 async function gatewayAction(profile, action) {
-  if (action === 'stop' && !await customConfirm(`Stop gateway for ${profile}?`)) return;
+  const messages = { start: `Start gateway for ${profile}?`, stop: `Stop gateway for ${profile}?`, restart: `Restart gateway for ${profile}? This may interrupt active sessions.` };
+  if (!await customConfirm(messages[action] || `${action} gateway for ${profile}?`, action.charAt(0).toUpperCase() + action.slice(1) + ' Gateway')) return;
   try {
     const csrfToken = state.csrfToken || '';
     const res = await api(`/api/gateway/${profile}/${action}`, {
@@ -1833,6 +1844,103 @@ async function gatewayAction(profile, action) {
     }
   } catch (e) {
     showToast(`Gateway ${action} failed: ${e.message}`, 'error');
+  }
+}
+
+// Generic SSE progress modal — opens modal, streams SSE, auto-closes
+async function sseProgressModal(title, url, options = {}) {
+  const { method = 'POST', headers = {}, body, autoCloseMs = 3000, onSuccess, onError } = options;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.display = 'flex';
+  overlay.innerHTML = `
+    <div class="modal-card" style="width:520px;max-width:90vw;">
+      <div class="modal-title">${title}</div>
+      <div class="sse-progress-log" style="margin:12px 0;font-family:var(--font-mono,monospace);font-size:12px;line-height:1.8;max-height:300px;overflow-y:auto;background:var(--bg-inset);border-radius:6px;padding:12px;color:var(--fg-muted);white-space:pre-wrap;"></div>
+      <div class="sse-progress-status" style="font-size:11px;color:var(--fg-muted);">Starting...</div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const logEl = overlay.querySelector('.sse-progress-log');
+  const statusEl = overlay.querySelector('.sse-progress-status');
+  const addLine = (text) => { logEl.textContent += text + '\n'; logEl.scrollTop = logEl.scrollHeight; };
+
+  try {
+    const fetchOpts = { method, headers, credentials: 'include' };
+    if (body) fetchOpts.body = body;
+    const res = await fetch(url, fetchOpts);
+
+    // Fallback for non-SSE responses (e.g. multer errors)
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const data = await res.json();
+      const errMsg = data.error || data.message || 'Failed';
+      statusEl.textContent = '❌ ' + errMsg;
+      statusEl.style.color = 'var(--danger)';
+      if (onError) onError(data);
+      setTimeout(() => overlay.remove(), 3000);
+      return;
+    }
+
+    // SSE streaming
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.type === 'progress') {
+            const text = data.line.replace(/\r/g, '');
+            statusEl.textContent = text;
+            statusEl.style.color = 'var(--accent)';
+            addLine(text);
+          } else if (data.type === 'done') {
+            statusEl.textContent = '✅ Complete!';
+            statusEl.style.color = 'var(--success)';
+            if (data.output) {
+              // Show summary lines
+              const summary = data.output.split('\n').filter(l =>
+                l.includes('complete') || l.includes('Complete') || l.includes('restored') ||
+                l.includes('Files:') || l.includes('Compressed:') || l.includes('Time:') ||
+                l.includes('Original:') || l.includes('Target:') || l.includes('Profile')
+              ).join('\n');
+              if (summary) addLine('\n' + summary);
+            }
+            if (data.message) addLine(data.message);
+            if (data.path) {
+              const a = document.createElement('a');
+              a.href = `/api/backup/download?path=${encodeURIComponent(data.path)}`;
+              a.download = data.filename || 'backup.zip';
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+            }
+            if (onSuccess) onSuccess(data);
+            setTimeout(() => overlay.remove(), autoCloseMs);
+          } else if (data.type === 'error') {
+            statusEl.textContent = '❌ ' + (data.message || 'Failed');
+            statusEl.style.color = 'var(--danger)';
+            if (data.output) addLine(data.output);
+            if (onError) onError(data);
+            setTimeout(() => overlay.remove(), 5000);
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    statusEl.textContent = '❌ Error: ' + e.message;
+    statusEl.style.color = 'var(--danger)';
+    setTimeout(() => overlay.remove(), 3000);
   }
 }
 
@@ -2118,6 +2226,8 @@ async function loadCronJobs(profile) {
 }
 
 async function cronAction(profile, jobId, action) {
+  const labels = { run: 'Run', pause: 'Pause', resume: 'Resume' };
+  if (!await customConfirm(`${labels[action] || action} cron job on ${profile}?`, (labels[action] || action) + ' Job')) return;
   try {
     await api('/api/hermes-cron/' + encodeURIComponent(profile) + '/' + jobId + '/' + action, { method: 'POST', headers: { 'X-CSRF-Token': state.csrfToken || '' } });
     showToast('Job ' + action + 'd', 'success');
@@ -2775,12 +2885,113 @@ window.doInstallSkill = async function(skillName) {
   }
 }
 
+async function loadUsersPage(container) {
+  container.innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">User Management</div>
+        <div class="page-subtitle">Manage users, roles, and permissions</div>
+      </div>
+    </div>
+    <div class="card-grid">
+      <div class="card">
+        <div class="card-title">Users</div>
+        <div id="users-page-list"><div class="loading">Loading users...</div></div>
+        <div class="card-actions" style="margin-top:8px;">
+          <button class="btn btn-ghost" onclick="showCreateUser()">+ Create User</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Audit Log</div>
+        <div id="audit-log-page"><div class="loading">Loading audit...</div></div>
+      </div>
+    </div>
+  `;
+
+  // Load users for the page
+  try {
+    const res = await api('/api/users');
+    const el = document.getElementById('users-page-list');
+    if (res.ok && res.users) {
+      el.innerHTML = res.users.map(u => {
+        const canManage = hasPerm('users.manage');
+        const permCount = u.permissions ? Object.values(u.permissions).filter(Boolean).length : 0;
+        const roleBadge = u.role === 'admin' ? '🟢' : u.role === 'viewer' ? '🔵' : '🟡';
+        return `<div class="stat-row">
+          <span class="stat-label">${roleBadge} ${u.username} <span class="badge">${u.role}</span> <span style="color:var(--fg-subtle);font-size:10px;">${permCount} perms</span></span>
+          <span class="stat-value" style="display:flex;gap:4px;align-items:center;">
+            ${u.last_login ? new Date(u.last_login).toLocaleDateString() : 'never'}
+            ${canManage ? `<button class="btn btn-ghost btn-sm" onclick="showEditUser('${u.username}')" title="Edit permissions">⚙</button>
+            ${res.users.length > 1 ? `<button class="btn btn-ghost btn-sm btn-danger" onclick="deleteUser('${u.username}')">✕</button>` : ''}` : ''}
+          </span>
+        </div>`;
+      }).join('');
+    } else {
+      el.innerHTML = '<div class="stat-row"><span class="stat-label">No users</span></div>';
+    }
+  } catch (e) {
+    document.getElementById('users-page-list').innerHTML = `<div class="error-msg">${e.message}</div>`;
+  }
+
+  // Load audit log for the page
+  loadAuditLogPage();
+}
+
+async function loadAuditLogPage() {
+  try {
+    const res = await fetch('/api/audit');
+    const data = await res.json();
+    const el = document.getElementById('audit-log-page');
+    if (data.ok && data.entries) {
+      const limit = state.auditDisplayLimit;
+      const all = data.entries.slice(-limit).reverse();
+      let html = all.map(e => {
+        const m = e.match(/\[(.+?)\]\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)/);
+        if (m) {
+          const [, ts, user, role, action, detail] = m;
+          const actionColors = {
+            'LOGIN': '#34d399', 'LOGOUT': '#fbbf24', 'USER_CREATE': '#4ecdc4',
+            'USER_DELETE': '#ff6b6b', 'USER_UPDATE': '#a78bfa', 'PASSWORD_RESET': '#ff6b6b',
+            'PASSWORD_CHANGE': '#fbbf24', 'CONFIG_UPDATE': '#a78bfa', 'KEY_REVEAL': '#ff6b6b',
+            'BACKUP_CREATE': '#34d399', 'BACKUP_IMPORT': '#4ecdc4', 'UPDATE': '#4ecdc4',
+            'RESTART': '#fbbf24', 'DOCTOR': '#a78bfa',
+          };
+          const color = actionColors[action] || '#4ecdc4';
+          return `<div style="font-size:11px;padding:4px 0;border-bottom:1px solid var(--border);font-family:var(--font);">
+            <span style="color:var(--fg-subtle);">[${new Date(ts).toLocaleString()}]</span>
+            <span style="color:var(--gold,#ffac02);font-weight:600;">${escapeHtml(user)}</span>
+            <span style="color:var(--fg-subtle);font-size:10px;">${escapeHtml(role)}</span>
+            <span style="color:${color};font-weight:600;">${escapeHtml(action)}</span>
+            <span style="color:var(--fg-muted);">${escapeHtml(detail)}</span>
+          </div>`;
+        }
+        return `<div style="font-size:11px;padding:4px 0;border-bottom:1px solid var(--border);color:var(--fg-muted);font-family:var(--font);">${escapeHtml(e)}</div>`;
+      }).join('');
+      // Load more button
+      if (data.entries.length > limit) {
+        const remaining = data.entries.length - limit;
+        html += `<div style="padding:8px;text-align:center;"><button class="btn btn-ghost btn-sm" onclick="loadMoreAudit()" style="font-size:11px;">Load more (${remaining} remaining)</button></div>`;
+      }
+      el.innerHTML = html;
+    } else {
+      el.innerHTML = '<div class="stat-row"><span class="stat-label">No audit entries</span></div>';
+    }
+  } catch (e) {
+    document.getElementById('audit-log-page').innerHTML = `<div class="error-msg">${e.message}</div>`;
+  }
+}
+
+window.loadMoreAudit = function() {
+  state.auditDisplayLimit += 15;
+  loadAuditLogPage();
+};
+
 async function loadMaintenance(container) {
   container.innerHTML = `
     <div class="page-header">
       <div>
         <div class="page-title">Maintenance</div>
-        <div class="page-subtitle">System tools, diagnostics, and user management</div>
+        <div class="page-subtitle">System tools and diagnostics</div>
       </div>
     </div>
     <div class="card-grid" id="maintenance-grid">
@@ -2838,26 +3049,7 @@ async function loadMaintenance(container) {
         <div class="stat-row"><span class="stat-label">Twitter</span><span class="stat-value"><a href="https://x.com/bayendor" target="_blank" style="color:var(--accent);text-decoration:none;">@bayendor</a></span></div>
       </div>
     </div>
-    <div class="card-grid" style="margin-top:16px;" id="maintenance-users">
-      <div class="card">
-        <div class="card-title">HCI Users</div>
-        <div id="users-list"><div class="loading">Loading users...</div></div>
-        <div class="card-actions" style="margin-top:8px;">
-          <button class="btn btn-ghost" onclick="showCreateUser()">+ Create User</button>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Audit Log</div>
-        <div id="audit-log"><div class="loading">Loading audit...</div></div>
-      </div>
-    </div>
   `;
-
-  // Load users
-  loadUsers();
-
-  // Load audit
-  loadAudit();
 
   // Load version
   try {
@@ -2873,6 +3065,7 @@ async function loadUsers() {
   try {
     const res = await api('/api/users');
     const el = document.getElementById('users-list');
+    if (!el) return; // Users page might be active, no maintenance panel
     if (res.ok && res.users) {
       el.innerHTML = res.users.map(u => {
         const canManage = hasPerm('users.manage');
@@ -2890,8 +3083,14 @@ async function loadUsers() {
       el.innerHTML = '<div class="stat-row"><span class="stat-label">No users</span></div>';
     }
   } catch (e) {
-    document.getElementById('users-list').innerHTML = `<div class="error-msg">${e.message}</div>`;
+    const el = document.getElementById('users-list');
+    if (el) el.innerHTML = `<div class="error-msg">${e.message}</div>`;
   }
+}
+
+function refreshUsersEverywhere() {
+  loadUsers();
+  if (state.page === 'users') loadUsersPage(document.getElementById('page-users'));
 }
 
 async function deleteUser(username) {
@@ -2904,7 +3103,7 @@ async function deleteUser(username) {
     });
     if (res.ok) {
       showToast(`User ${username} deleted`, 'success');
-      loadUsers();
+      refreshUsersEverywhere();
     } else {
       await customAlert(res.error || 'Failed', 'Error');
     }
@@ -2914,47 +3113,31 @@ async function deleteUser(username) {
 }
 
 async function createBackup() {
-  try {
-    showToast('Creating backup...', 'info');
-    const csrfToken = state.csrfToken || '';
-    const res = await api('/api/backup/create', { method: 'POST', headers: { 'X-CSRF-Token': csrfToken } });
-    if (res.ok && res.path) {
-      const a = document.createElement('a');
-      a.href = `/api/backup/download?path=${encodeURIComponent(res.path)}`;
-      a.download = res.filename || 'backup.zip';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      showToast('Backup downloaded', 'success');
-    } else {
-      showToast(res.error || 'Backup failed', 'error');
-    }
-  } catch (e) { showToast('Backup failed: ' + e.message, 'error'); }
+  if (!await customConfirm('Create a system backup? This may take a moment.', 'Create Backup')) return;
+  await sseProgressModal('📦 Creating Backup', '/api/backup/create', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': state.csrfToken || '' },
+    autoCloseMs: 3000,
+    onSuccess: () => { showToast('Backup downloaded', 'success'); },
+  });
 }
 
 async function importBackup(input) {
   if (!input.files?.[0]) return;
   const file = input.files[0];
   if (!file.name.endsWith('.zip')) return showToast('Please select a .zip file', 'error');
-  if (!confirm('Import backup? This will restore data from the backup file.')) { input.value = ''; return; }
-  try {
-    showToast('Importing backup...', 'info');
-    const csrfToken = state.csrfToken || '';
-    const formData = new FormData();
-    formData.append('backup', file);
-    const res = await fetch('/api/backup/import', {
-      method: 'POST',
-      headers: { 'X-CSRF-Token': csrfToken },
-      body: formData,
-      credentials: 'include',
-    });
-    const data = await res.json();
-    if (data.ok) {
-      showToast('Backup imported successfully', 'success');
-    } else {
-      showToast(data.error || 'Import failed', 'error');
-    }
-  } catch (e) { showToast('Import failed: ' + e.message, 'error'); }
+  if (!await customConfirm('Import backup? This will restore data from the backup file.', 'Import Backup')) { input.value = ''; return; }
+
+  const formData = new FormData();
+  formData.append('backup', file);
+
+  await sseProgressModal('📥 Importing Backup', '/api/backup/import', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': state.csrfToken || '' },
+    body: formData,
+    autoCloseMs: 4000,
+    onSuccess: () => { showToast('Backup imported successfully', 'success'); },
+  });
   input.value = '';
 }
 
@@ -3087,6 +3270,7 @@ function renderDoctorOutput(raw) {
 }
 
 async function runHealthCheck() {
+  if (!await customConfirm('Run health check on all API endpoints?', 'Health Check')) return;
   const el = document.getElementById('health-check-results');
   if (!el) return;
   el.innerHTML = '<div class="loading">Testing APIs...</div>';
@@ -3118,6 +3302,8 @@ async function runHealthCheck() {
 }
 
 async function runDoctor(fix = false) {
+  const msg = fix ? 'Run diagnostics with auto-fix? This may modify system settings.' : 'Run diagnostics? This is read-only.';
+  if (!await customConfirm(msg, fix ? 'Auto-fix' : 'Diagnostics')) return;
   const el = document.getElementById('doctor-result');
   el.innerHTML = '<div class="loading">Running diagnostics...</div>';
   try {
@@ -3138,6 +3324,7 @@ async function runDoctor(fix = false) {
 }
 
 async function runDump() {
+  if (!await customConfirm('Generate system dump? This creates a summary of current configuration.', 'Generate Dump')) return;
   const el = document.getElementById('dump-result');
   el.innerHTML = '<div class="loading">Generating dump...</div>';
   try {
@@ -3150,25 +3337,16 @@ async function runDump() {
 
 async function runUpdate() {
   if (!await customConfirm('Update Hermes? This may take a minute.')) return;
-  const el = document.getElementById('update-result');
-  el.innerHTML = '<div class="loading">Updating...</div>';
   // Pause notification polling during update to avoid false network errors
   const wasPolling = state.notifInterval;
   if (state.notifInterval) { clearInterval(state.notifInterval); state.notifInterval = null; }
-  try {
-    const csrfToken = state.csrfToken || '';
-    const res = await api('/api/update', {
-      method: 'POST',
-      headers: { 'X-CSRF-Token': csrfToken },
-    });
-    el.innerHTML = `<pre style="font-size:11px;white-space:pre-wrap;color:var(--fg-muted);">${escapeHtml(res.output || 'Update started')}</pre>`;
-    showToast('Hermes update complete', 'success');
-  } catch (e) {
-    el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
-  } finally {
-    // Resume polling after update
-    if (wasPolling) startNotifPolling();
-  }
+  await sseProgressModal('⬆ Updating Hermes', '/api/update', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': state.csrfToken || '' },
+    autoCloseMs: 3000,
+    onSuccess: () => { if (wasPolling) startNotifPolling(); },
+    onError: () => { if (wasPolling) startNotifPolling(); },
+  });
 }
 
 async function showCreateAgent() {
@@ -3234,8 +3412,25 @@ async function showCreateUser() {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  // Permission groups (same as edit user)
+  const permGroups = [
+    { label: 'Sessions', perms: ['sessions.view', 'sessions.messages', 'sessions.delete'] },
+    { label: 'Chat', perms: ['chat.use', 'chat.manage'] },
+    { label: 'Logs & Usage', perms: ['logs.view', 'usage.view', 'usage.export'] },
+    { label: 'Gateway', perms: ['gateway.view', 'gateway.control'] },
+    { label: 'Config', perms: ['config.view', 'config.edit'] },
+    { label: 'Secrets', perms: ['secrets.view', 'secrets.reveal', 'secrets.edit'] },
+    { label: 'Skills', perms: ['skills.browse', 'skills.install'] },
+    { label: 'Cron', perms: ['cron.view', 'cron.manage'] },
+    { label: 'Files', perms: ['files.read', 'files.write'] },
+    { label: 'Terminal', perms: ['terminal'] },
+    { label: 'Users', perms: ['users.view', 'users.manage'] },
+    { label: 'System', perms: ['system.update', 'system.backup', 'system.doctor', 'system.restart'] },
+  ];
+
   overlay.innerHTML = `
-    <div class="modal-card" style="max-width:550px;max-height:85vh;overflow-y:auto;">
+    <div class="modal-card" style="max-width:600px;max-height:85vh;overflow-y:auto;">
       <div class="modal-title">Create User</div>
       <form id="create-user-form">
         <div style="margin-bottom:10px;">
@@ -3261,17 +3456,26 @@ async function showCreateUser() {
         <div style="margin-bottom:10px;">
           <label style="font-size:11px;color:var(--fg-muted);display:block;margin-bottom:6px;">Role</label>
           <div style="display:flex;gap:6px;margin-bottom:10px;">
-            <button type="button" class="btn btn-ghost btn-sm" id="role-admin-btn" onclick="applyCreatePreset('admin', this)">Admin</button>
-            <button type="button" class="btn btn-ghost btn-sm" id="role-viewer-btn" onclick="applyCreatePreset('viewer', this)">Viewer</button>
-            <button type="button" class="btn btn-ghost btn-sm" id="role-custom-btn" onclick="applyCreatePreset('custom', this)">Custom</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="applyCreatePreset('admin', this)">Admin</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="applyCreatePreset('viewer', this)">Viewer</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="applyCreatePreset('custom', this)">Custom</button>
           </div>
           <input type="hidden" name="role" value="viewer" />
           <div id="perm-custom-list" style="display:none;">
-            <div style="font-size:11px;color:var(--fg-muted);margin-bottom:6px;">Select permissions:</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px;" id="perm-checkboxes">
-              ${['sessions.view','sessions.messages','sessions.delete','chat.use','chat.manage','logs.view','usage.view','usage.export','gateway.view','gateway.control','config.view','config.edit','secrets.view','secrets.reveal','secrets.edit','skills.browse','skills.install','cron.view','cron.manage','files.read','files.write','terminal','users.view','users.manage','system.update','system.backup','system.doctor','system.restart'].map(p =>
-                `<label style="display:flex;align-items:center;gap:4px;cursor:pointer;padding:2px 0;"><input type="checkbox" name="perm" value="${p}" /> ${p}</label>`
-              ).join('')}
+            <div style="font-size:11px;color:var(--fg-muted);margin-bottom:6px;">Permissions:</div>
+            <div style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius);padding:8px;background:var(--bg-input);">
+              ${permGroups.map(g => `
+                <div style="margin-bottom:8px;">
+                  <div style="font-size:10px;font-weight:600;color:var(--gold,#ffac02);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">${g.label}</div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;font-size:11px;">
+                    ${g.perms.map(p => `
+                      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;padding:2px 4px;border-radius:3px;" onmouseover="this.style.background='var(--bg-panel-hover)'" onmouseout="this.style.background='transparent'">
+                        <input type="checkbox" name="perm" value="${p}" /> ${p}
+                      </label>
+                    `).join('')}
+                  </div>
+                </div>
+              `).join('')}
             </div>
           </div>
         </div>
@@ -3285,6 +3489,7 @@ async function showCreateUser() {
   document.body.appendChild(overlay);
 
   // Apply preset for create user modal
+  const form = overlay.querySelector('#create-user-form');
   window.applyCreatePreset = function(role, btn) {
     form.querySelector('[name=role]').value = role;
     const customList = document.getElementById('perm-custom-list');
@@ -3305,11 +3510,10 @@ async function showCreateUser() {
   };
 
   // Set default viewer preset as active
-  const viewerBtn = document.getElementById('role-viewer-btn');
+  const viewerBtn = overlay.querySelector('[onclick="applyCreatePreset(\'viewer\', this)"]');
   if (viewerBtn) viewerBtn.classList.add('btn-primary');
 
   // Password match check
-  const form = overlay.querySelector('#create-user-form');
   const pwInput = form.querySelector('[name=password]');
   const confInput = form.querySelector('[name=confirm]');
   const msgEl = overlay.querySelector('#pw-match-msg');
@@ -3355,7 +3559,7 @@ async function createUser(username, password, role, permissions) {
     });
     if (res.ok) {
       showToast(`User ${username} created`, 'success');
-      loadUsers();
+      refreshUsersEverywhere();
     } else {
       showToast(`Failed: ${res.error}`, 'error');
     }
@@ -3481,7 +3685,7 @@ async function showEditUser(username) {
       if (res.ok) {
         showToast(`User ${username} updated`, 'success');
         overlay.remove();
-        loadUsers();
+        refreshUsersEverywhere();
       } else {
         showToast(`Failed: ${res.error}`, 'error');
       }
@@ -3491,31 +3695,71 @@ async function showEditUser(username) {
 
 // Reset password sub-modal
 async function showResetPassword(username) {
-  const result = await showModal({
-    title: `Reset Password: ${username}`,
-    message: 'Enter a new password for this user.',
-    inputs: [{ placeholder: 'New password (min 8 chars)', name: 'password', type: 'password' }],
-    buttons: [
-      { text: 'Cancel', value: false },
-      { text: 'Reset Password', value: true, primary: true },
-    ],
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = `
+    <div class="modal-card" style="max-width:400px;">
+      <div class="modal-title">Reset Password: ${escapeHtml(username)}</div>
+      <form id="reset-pw-form">
+        <div style="margin-bottom:10px;">
+          <label style="font-size:11px;color:var(--fg-muted);display:block;margin-bottom:4px;">New Password</label>
+          <div style="position:relative;">
+            <input class="modal-input" name="password" type="password" placeholder="Min 8 characters" autocomplete="new-password" required style="padding-right:36px;" />
+            <button type="button" onclick="togglePwVis(this)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--fg-muted);cursor:pointer;font-size:14px;">👁</button>
+          </div>
+        </div>
+        <div style="margin-bottom:10px;">
+          <label style="font-size:11px;color:var(--fg-muted);display:block;margin-bottom:4px;">Confirm Password</label>
+          <div style="position:relative;">
+            <input class="modal-input" name="confirm" type="password" placeholder="Re-enter password" autocomplete="new-password" required style="padding-right:36px;" />
+            <button type="button" onclick="togglePwVis(this)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--fg-muted);cursor:pointer;font-size:14px;">👁</button>
+          </div>
+          <div id="reset-pw-match-msg" style="font-size:11px;margin-top:4px;min-height:16px;"></div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+          <button type="submit" class="btn btn-primary" style="color:var(--coral,#ff6b6b);">Reset Password</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Password match check
+  const form = overlay.querySelector('#reset-pw-form');
+  const pwInput = form.querySelector('[name=password]');
+  const confInput = form.querySelector('[name=confirm]');
+  const msgEl = overlay.querySelector('#reset-pw-match-msg');
+  const checkMatch = () => {
+    if (!confInput.value) { msgEl.textContent = ''; return; }
+    msgEl.textContent = pwInput.value === confInput.value ? '✓ Passwords match' : '✗ Passwords do not match';
+    msgEl.style.color = pwInput.value === confInput.value ? 'var(--green)' : 'var(--red)';
+  };
+  pwInput.addEventListener('input', checkMatch);
+  confInput.addEventListener('input', checkMatch);
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const newPw = pwInput.value;
+    const confirmPw = confInput.value;
+    if (newPw.length < 8) return showToast('Password must be at least 8 chars', 'error');
+    if (newPw !== confirmPw) return showToast('Passwords do not match', 'error');
+    try {
+      const csrfToken = state.csrfToken || '';
+      const res = await api(`/api/users/${encodeURIComponent(username)}/reset-password`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': csrfToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ new_password: newPw }),
+      });
+      if (res.ok) {
+        showToast(`Password reset for ${username}`, 'success');
+        overlay.remove();
+      } else {
+        showToast(`Failed: ${res.error}`, 'error');
+      }
+    } catch (e) { showToast(`Failed: ${e.message}`, 'error'); }
   });
-  if (!result?.action || !result.inputs?.[0]) return;
-  const newPw = result.inputs[0];
-  if (newPw.length < 8) return showToast('Password must be at least 8 chars', 'error');
-  try {
-    const csrfToken = state.csrfToken || '';
-    const res = await api(`/api/users/${encodeURIComponent(username)}/reset-password`, {
-      method: 'POST',
-      headers: { 'X-CSRF-Token': csrfToken, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ new_password: newPw }),
-    });
-    if (res.ok) {
-      showToast(`Password reset for ${username}`, 'success');
-    } else {
-      showToast(`Failed: ${res.error}`, 'error');
-    }
-  } catch (e) { showToast(`Failed: ${e.message}`, 'error'); }
 }
 
 // ============================================
@@ -3525,9 +3769,23 @@ async function fetchNotifications() {
   try {
     const res = await api('/api/notifications');
     if (res.ok && res.notifications) {
+      const prevUnread = state.notifications.filter((n) => !n.dismissed).length;
       state.notifications = res.notifications;
       state.notifFailCount = 0;
       updateNotifBadge();
+      // Re-render dropdown if it's open
+      const dropdown = document.getElementById('notif-dropdown');
+      if (dropdown && dropdown.style.display !== 'none') {
+        renderNotifications();
+      }
+      // Flash badge if new unread notifications arrived
+      const newUnread = state.notifications.filter((n) => !n.dismissed).length;
+      if (newUnread > prevUnread && badgeFlashTimeout) clearTimeout(badgeFlashTimeout);
+      const badge = document.getElementById('notif-badge');
+      if (badge && newUnread > prevUnread) {
+        badge.style.transform = 'scale(1.3)';
+        badgeFlashTimeout = setTimeout(() => { badge.style.transform = 'scale(1)'; }, 300);
+      }
     } else if (res.error === 'network' || res.error === 'rate-limited') {
       state.notifFailCount = (state.notifFailCount || 0) + 1;
       if (state.notifFailCount === 3 || state.notifFailCount === 6) startNotifPolling();
@@ -3537,6 +3795,8 @@ async function fetchNotifications() {
     if (state.notifFailCount === 3 || state.notifFailCount === 6) startNotifPolling();
   }
 }
+
+let badgeFlashTimeout;
 
 function updateNotifBadge() {
   const badge = document.getElementById('notif-badge');
@@ -3553,9 +3813,103 @@ function startNotifPolling() {
   if (state.notifInterval) clearInterval(state.notifInterval);
   fetchNotifications();
   const failCount = state.notifFailCount || 0;
-  const interval = failCount >= 6 ? 120000 : failCount >= 3 ? 60000 : 30000;
+  const interval = failCount >= 6 ? 120000 : failCount >= 3 ? 60000 : 15000;
   state.notifInterval = setInterval(fetchNotifications, interval);
 }
+
+// ============================================
+// Notification helpers (module-level so fetchNotifications can access them)
+// ============================================
+function notifColor(type) {
+  const colors = {
+    error: 'var(--coral, #ff6b6b)',
+    warning: 'var(--amber, #fbbf24)',
+    success: 'var(--green, #34d399)',
+    info: 'var(--teal, #4ecdc4)',
+  };
+  return colors[type] || colors.info;
+}
+
+function notifIcon(type) {
+  const icons = {
+    error: '🔴',
+    warning: '🟡',
+    success: '🟢',
+    info: '🔵',
+  };
+  return icons[type] || icons.info;
+}
+
+function renderNotifications() {
+  const listEl = document.getElementById('notif-list');
+  if (!listEl) return;
+  const limit = state.notifDisplayLimit;
+  const all = state.notifications.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+  const shown = all.slice(0, limit);
+  if (shown.length === 0) {
+    listEl.innerHTML = '<div class="notif-empty">No notifications</div>';
+    return;
+  }
+  listEl.innerHTML = shown.map(n => {
+    const color = notifColor(n.type);
+    const icon = notifIcon(n.type);
+    return `
+      <div class="notif-item ${n.dismissed ? 'notif-read' : ''}" data-notif-id="${n.id || ''}" style="padding:8px;border-bottom:1px solid var(--border);font-size:11px;cursor:pointer;${n.dismissed ? 'opacity:0.5;' : ''}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;">
+          <div style="flex-shrink:0;">${icon}</div>
+          <div style="flex:1;color:${n.dismissed ? 'var(--fg-muted)' : 'var(--fg)'};">
+            <span style="color:${color};font-weight:600;font-size:10px;text-transform:uppercase;">${n.type || 'info'}</span><br>${escapeHtml(n.message || '')}
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();dismissNotifItem('${n.id || ''}')" style="padding:2px 6px;font-size:10px;color:var(--fg-muted);" title="Dismiss">✕</button>
+        </div>
+        <div style="color:var(--fg-subtle);font-size:10px;margin-top:2px;margin-left:22px;">${n.timestamp ? new Date(n.timestamp).toLocaleString() : ''}</div>
+      </div>
+    `;
+  }).join('');
+
+  // Click to mark as read
+  listEl.querySelectorAll('.notif-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.dataset.notifId;
+      if (id) markNotifRead(id);
+      el.style.opacity = '0.5';
+      el.classList.add('notif-read');
+    });
+  });
+
+  // Load more button
+  if (all.length > limit) {
+    listEl.innerHTML += `<div style="padding:8px;text-align:center;"><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();loadMoreNotifs(${limit + 5})">Load more (${all.length - limit} remaining)</button></div>`;
+  }
+}
+
+window.loadMoreNotifs = function(newLimit) {
+  state.notifDisplayLimit = newLimit || 10;
+  renderNotifications();
+};
+
+window.markNotifRead = async function(id) {
+  const n = state.notifications.find(n => n.id === id);
+  if (n) n.dismissed = true;
+  updateNotifBadge();
+  try { await api('/api/notifications/dismiss', { method: 'POST', body: JSON.stringify({ id }) }); } catch {}
+};
+
+window.dismissNotifItem = async function(id) {
+  const idx = state.notifications.findIndex(n => n.id === id);
+  if (idx >= 0) { state.notifications[idx].dismissed = true; updateNotifBadge(); }
+  try { await api('/api/notifications/dismiss', { method: 'POST', body: JSON.stringify({ id }) }); } catch {}
+  state.notifDisplayLimit = Math.max(state.notifDisplayLimit, 5);
+  renderNotifications();
+};
+
+window.markAllNotifRead = async function() {
+  state.notifications.forEach(n => n.dismissed = true);
+  updateNotifBadge();
+  try { await api('/api/notifications/clear', { method: 'POST' }); } catch {}
+  state.notifDisplayLimit = 5;
+  renderNotifications();
+};
 
 // ============================================
 // API Helper
@@ -3663,8 +4017,12 @@ function init() {
     document.getElementById('password-modal').style.display = 'flex';
   });
 
+  document.getElementById('users-mgmt-btn')?.addEventListener('click', () => {
+    document.getElementById('user-dropdown').style.display = 'none';
+    navigate('users');
+  });
+
   document.getElementById('password-cancel')?.addEventListener('click', () => {
-    document.getElementById('password-modal').style.display = 'none';
     document.getElementById('password-error').textContent = '';
   });
 
@@ -3703,78 +4061,18 @@ function init() {
     }
   });
 
-  // Notifications
+  // Notifications (functions defined at module level, see ~line 3580)
   document.getElementById('notif-btn')?.addEventListener('click', () => {
     const dropdown = document.getElementById('notif-dropdown');
     const isVisible = dropdown.style.display !== 'none';
     dropdown.style.display = isVisible ? 'none' : 'block';
-
     if (!isVisible) {
-      renderNotifications(5);
+      state.notifDisplayLimit = 5;
+      renderNotifications();
     }
   });
 
-  function renderNotifications(limit) {
-    const listEl = document.getElementById('notif-list');
-    const all = state.notifications.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
-    const shown = all.slice(0, limit || 5);
-    if (shown.length === 0) {
-      listEl.innerHTML = '<div class="notif-empty">No notifications</div>';
-    } else {
-      listEl.innerHTML = shown.map(n => `
-        <div class="notif-item ${n.dismissed ? 'notif-read' : ''}" data-notif-id="${n.id || ''}" style="padding:8px;border-bottom:1px solid var(--border);font-size:11px;cursor:pointer;${n.dismissed ? 'opacity:0.5;' : ''}">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-            <div style="flex:1;color:${n.dismissed ? 'var(--fg-muted)' : 'var(--fg)'};">${escapeHtml(n.message || '')}</div>
-            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();dismissNotifItem('${n.id || ''}')" style="padding:2px 6px;font-size:10px;" title="Dismiss">✕</button>
-          </div>
-          <div style="color:var(--fg-subtle);font-size:10px;margin-top:2px;">${n.timestamp ? new Date(n.timestamp).toLocaleString() : ''}</div>
-        </div>
-      `).join('');
-
-      // Click to mark as read
-      listEl.querySelectorAll('.notif-item').forEach(el => {
-        el.addEventListener('click', () => {
-          const id = el.dataset.notifId;
-          if (id) markNotifRead(id);
-          el.style.opacity = '0.5';
-          el.classList.add('notif-read');
-        });
-      });
-
-      // Load more button
-      if (all.length > limit) {
-        listEl.innerHTML += `<div style="padding:8px;text-align:center;"><button class="btn btn-ghost btn-sm" onclick="loadMoreNotifs(${limit + 5})">Load more (${all.length - limit} remaining)</button></div>`;
-      }
-    }
-  }
-
-  window.loadMoreNotifs = function(newLimit) {
-    renderNotifications(newLimit || 10);
-  };
-
-  window.markNotifRead = async function(id) {
-    const n = state.notifications.find(n => n.id === id);
-    if (n) n.dismissed = true;
-    updateNotifBadge();
-    try { await api('/api/notifications/dismiss', { method: 'POST', body: JSON.stringify({ id }) }); } catch {}
-  };
-
-  window.dismissNotifItem = async function(id) {
-    const idx = state.notifications.findIndex(n => n.id === id);
-    if (idx >= 0) { state.notifications[idx].dismissed = true; updateNotifBadge(); }
-    try { await api('/api/notifications/dismiss', { method: 'POST', body: JSON.stringify({ id }) }); } catch {}
-    renderNotifications(5);
-  };
-
-  window.markAllNotifRead = async function() {
-    state.notifications.forEach(n => n.dismissed = true);
-    updateNotifBadge();
-    try { await api('/api/notifications/clear', { method: 'POST' }); } catch {}
-    renderNotifications(5);
-  };
-
   document.getElementById('notif-clear')?.addEventListener('click', async () => {
-    // Mark all as read (dismissed but keep in list)
     await window.markAllNotifRead();
   });
 
@@ -4497,22 +4795,6 @@ function hasPerm(perm) {
 // Expose for onclick handlers in templates
 window.hasPerm = hasPerm;
 
-function dismissNotif(el, id) {
-  if (el) el.style.opacity = "0.4";
-  if (id) {
-    const idx = state.notifications.findIndex(n => n.id === id);
-    if (idx >= 0) { state.notifications[idx].dismissed = true; md(); }
-  }
-}
-
-function loadMoreNotifs() {
-  if (state._notifExtra) state._notifExtra += 10;
-  else state._notifExtra = 10;
-  md();
-}
-
-window.dismissNotif = dismissNotif;
-window.loadMoreNotifs = loadMoreNotifs;
 window.refreshLogs = refreshLogs;
 window.toggleLogsAuto = toggleLogsAuto;
 window.setLogsLevel = setLogsLevel;

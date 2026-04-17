@@ -12,6 +12,11 @@ const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const rateLimit = require('express-rate-limit');
 const yaml = require('js-yaml');
+const Database = require('better-sqlite3');
+const {
+  mergeSessionsFromSources,
+  parseHermesSessionsList,
+} = require('./lib/session-list');
 
 // ── LLM Pricing (via @pydantic/genai-prices) ──
 const { calcPrice } = require('@pydantic/genai-prices');
@@ -136,6 +141,7 @@ function clearAuthCookie(res) {
 const CONTROL_HOME = process.env.HERMES_CONTROL_HOME || path.join(os.homedir(), '.hermes');
 const CONTROL_STATE_DIR = path.join(CONTROL_HOME, 'control-interface');
 const AVATAR_OVERRIDE_PATH = path.join(CONTROL_STATE_DIR, 'avatar.dataurl');
+const STATE_DB_PATH = path.join(CONTROL_HOME, 'state.db');
 
 function parseExplorerRoots(raw) {
   if (!raw) return null;
@@ -835,26 +841,6 @@ function getProjects() {
   }
 }
 
-function parseHermesSessionsList(raw) {
-  const lines = String(raw || '').split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
-  const dataLines = lines.filter((line) =>
-    !/^Title\s+Preview\s+Last Active\s+ID$/i.test(line) &&
-    !/^[─\-]+$/.test(line) &&
-    !/^(Preview|Title|Last Active|Src)\s+(Preview|Title|Last Active|Src)/i.test(line)
-  );
-  return dataLines.map((line) => {
-    const parts = line.trim().split(/\s{2,}/);
-    if (parts.length < 4) return null;
-    const [title, preview, lastActive, id] = parts;
-    return {
-      id: String(id || '').trim(),
-      title: String(title || '').trim() || '—',
-      preview: String(preview || '').trim() || '—',
-      lastActive: String(lastActive || '').trim() || '—',
-    };
-  }).filter(Boolean);
-}
-
 function readLayoutStore() {
   try {
     const raw = fs.readFileSync(layoutStorePath, 'utf8');
@@ -1013,13 +999,10 @@ async function getSessions() {
   if (hermesSidebarSessionsCache.data.length && now - hermesSidebarSessionsCache.at < 10_000) {
     return hermesSidebarSessionsCache.data;
   }
-  const raw = await shell('hermes sessions list --limit 10');
-  if (raw) {
-    const data = parseHermesSessionsList(raw);
-    if (data.length) {
-      hermesSidebarSessionsCache = { at: now, data };
-      return data;
-    }
+  const data = await getAllSessions().then((sessions) => sessions.slice(0, 10)).catch(() => []);
+  if (data.length) {
+    hermesSidebarSessionsCache = { at: now, data };
+    return data;
   }
   // Preserve existing cache on error — don't clobber with empty fallback
   if (hermesSidebarSessionsCache.data.length) {
@@ -1035,6 +1018,46 @@ async function getSessions() {
 
 let hermesAllSessionsCache = { at: 0, data: [] };
 
+function getStateDbPath(profile) {
+  return profile && profile !== 'default'
+    ? path.join(os.homedir(), '.hermes', 'profiles', profile, 'state.db')
+    : STATE_DB_PATH;
+}
+
+function loadSessionsFromDb(stateDbPath, limit = 250) {
+  if (!fs.existsSync(stateDbPath)) return { dbSessions: [], previewBySessionId: {} };
+
+  const db = new Database(stateDbPath, { readonly: true });
+  try {
+    const dbSessions = db.prepare(`
+      SELECT id, title, parent_session_id, started_at, ended_at, message_count, source
+      FROM sessions
+      ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
+      LIMIT ?
+    `).all(limit);
+
+    const previewRows = db.prepare(`
+      SELECT session_id, content
+      FROM messages
+      WHERE id IN (
+        SELECT MAX(id)
+        FROM messages
+        WHERE content IS NOT NULL AND TRIM(content) != ''
+        GROUP BY session_id
+      )
+    `).all();
+
+    const previewBySessionId = {};
+    for (const row of previewRows) {
+      previewBySessionId[row.session_id] = row.content;
+    }
+
+    return { dbSessions, previewBySessionId };
+  } finally {
+    db.close();
+  }
+}
+
 async function getAllSessions(profile) {
   const now = Date.now();
   const cacheKey = profile || 'all';
@@ -1044,31 +1067,29 @@ async function getAllSessions(profile) {
   const cmd = profile ? `hermes -p ${profile} sessions list --limit 250` : 'hermes sessions list --limit 250';
   const raw = await shell(cmd);
   if (raw) {
-    const data = parseHermesSessionsList(raw);
-    // Enrich with message counts from state.db
-    try {
-      const stateDbPath = profile && profile !== 'default'
-        ? path.join(os.homedir(), '.hermes', 'profiles', profile, 'state.db')
-        : STATE_DB_PATH;
-      if (fs.existsSync(stateDbPath)) {
-        const db = new Database(stateDbPath, { readonly: true });
-        try {
-          const counts = db.prepare('SELECT id, message_count, title FROM sessions').all();
-          const countMap = {};
-          for (const c of counts) countMap[c.id] = { message_count: c.message_count || 0, dbTitle: c.title };
-          for (const s of data) {
-            const info = countMap[s.id];
-            if (info) {
-              s.messageCount = info.message_count;
-              if ((!s.title || s.title === '—') && info.dbTitle) s.title = info.dbTitle;
-            }
-          }
-        } finally { db.close(); }
-      }
-    } catch {}
+    const cliSessions = parseHermesSessionsList(raw);
+    const stateDbPath = getStateDbPath(profile);
+    const { dbSessions, previewBySessionId } = loadSessionsFromDb(stateDbPath);
+    const data = mergeSessionsFromSources({
+      cliSessions,
+      dbSessions,
+      previewBySessionId,
+      nowMs: now,
+    });
     hermesAllSessionsCache = { at: now, data, key: cacheKey };
     return data;
   }
+
+  try {
+    const stateDbPath = getStateDbPath(profile);
+    const { dbSessions, previewBySessionId } = loadSessionsFromDb(stateDbPath);
+    const data = mergeSessionsFromSources({ dbSessions, previewBySessionId, nowMs: now });
+    if (data.length) {
+      hermesAllSessionsCache = { at: now, data, key: cacheKey };
+      return data;
+    }
+  } catch {}
+
   // No fallback to old cache — return empty if command returned nothing
   return [];
 }
@@ -2393,33 +2414,46 @@ app.get('/api/health', (req, res) => {
 });
 
 // HCI Update — git pull + npm install + build + auto-restart
-app.post('/api/hci/update', requireRole('admin'), async (req, res) => {
+app.post('/api/hci/update', requireRole('admin'), (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write(`data: ${JSON.stringify({ type: 'progress', line: 'Starting HCI update...' })}\n\n`);
+
   const HCI_DIR = path.join(__dirname);
   const steps = [
     { name: 'git pull', cmd: `cd ${HCI_DIR} && git pull --ff-only 2>&1` },
     { name: 'npm install', cmd: `cd ${HCI_DIR} && npm install 2>&1` },
     { name: 'build', cmd: `cd ${HCI_DIR} && npm run build 2>&1` },
   ];
-  const log = [];
-  try {
+
+  (async () => {
     for (const step of steps) {
-      log.push(`▸ ${step.name}...`);
-      const out = await shell(step.cmd, '60s');
-      log.push(out.trim() || '(no output)');
-      if (out.includes('error') || out.includes('ERROR') || out.includes('fatal')) {
-        throw new Error(`${step.name} failed`);
+      res.write(`data: ${JSON.stringify({ type: 'progress', line: `▸ ${step.name}...` })}\n\n`);
+      try {
+        const out = await shell(step.cmd, '120s');
+        const text = out.trim() || '(no output)';
+        text.split('\n').filter(l => l.trim()).forEach(line => {
+          res.write(`data: ${JSON.stringify({ type: 'progress', line: '  ' + line.trim() })}\n\n`);
+        });
+        if (out.includes('error') || out.includes('ERROR') || out.includes('fatal')) {
+          res.write(`data: ${JSON.stringify({ type: 'error', message: `${step.name} failed` })}\n\n`);
+          return res.end();
+        }
+      } catch (e) {
+        res.write(`data: ${JSON.stringify({ type: 'error', message: `${step.name} failed: ${e.message}` })}\n\n`);
+        return res.end();
       }
     }
-    log.push('▸ Update complete. Restarting in 3s...');
-    res.json({ ok: true, log: log.join('\n') });
-    // Restart: spawn delayed exit
-    setTimeout(() => {
-      console.log('[HCI] Update applied, restarting...');
-      process.exit(0); // restart.sh wrapper will pick this up
-    }, 3000);
-  } catch (e) {
-    res.json({ ok: false, error: e.message, log: log.join('\n') });
-  }
+    res.write(`data: ${JSON.stringify({ type: 'progress', line: '▸ Update complete. Restarting in 3s...' })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'done', message: 'Update complete, restarting...' })}\n\n`);
+    res.end();
+    setTimeout(() => { process.exit(0); }, 3000);
+  })();
 });
 
 // ============================================
@@ -2906,51 +2940,136 @@ app.post('/api/skills/check', requireAuth, async (req, res) => {
 });
 
 // Doctor
-app.post('/api/doctor', requireRole('admin'), async (req, res) => {
-  try {
-    const fix = req.body.fix ? '--fix' : '';
-    const output = await shell(`hermes doctor ${fix} 2>&1`, '120s');
-    res.json({ ok: true, output });
-  } catch (e) {
-    res.json({ ok: false, output: e.message });
-  }
+app.post('/api/doctor', requireRole('admin'), (req, res) => {
+  const fix = req.body.fix ? '--fix' : '';
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write(`data: ${JSON.stringify({ type: 'progress', line: fix ? 'Running diagnostics with auto-fix...' : 'Running diagnostics...' })}\n\n`);
+
+  const proc = spawn('script', ['-qfc', `hermes doctor ${fix}`, '/dev/null'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, HERMES_HOME: path.join(os.homedir(), '.hermes'), TERM: 'dumb' },
+  });
+  let fullOutput = '';
+  proc.stdout.on('data', (chunk) => {
+    const text = stripAnsi(chunk.toString());
+    fullOutput += text;
+    text.split('\n').filter(l => l.trim()).forEach(line => {
+      res.write(`data: ${JSON.stringify({ type: 'progress', line: line.trim() })}\n\n`);
+    });
+  });
+  proc.stderr.on('data', (chunk) => {
+    const text = stripAnsi(chunk.toString());
+    fullOutput += text;
+    if (text.trim()) res.write(`data: ${JSON.stringify({ type: 'progress', line: text.trim() })}\n\n`);
+  });
+  proc.on('close', (code) => {
+    res.write(`data: ${JSON.stringify({ type: 'done', output: fullOutput.trim() })}\n\n`);
+    res.end();
+  });
 });
 
 // ── Backup & Import ──
-app.post('/api/backup/create', requireRole('admin'), async (req, res) => {
-  try {
-    const output = await shell('hermes backup -o /tmp/hermes-backup.zip 2>&1', '60s');
-    if (output.includes('error') || output.includes('Error')) {
-      return res.json({ ok: false, error: output.trim() });
+// Helper: strip ANSI escape codes from string
+function stripAnsi(str) {
+  return str.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\r/g, '');
+}
+
+app.post('/api/backup/create', requireRole('admin'), (req, res) => {
+  // SSE response — stream hermes backup progress in real-time
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',  // prevent nginx buffering
+  });
+  res.flushHeaders();
+  // Send initial event so frontend knows connection is alive
+  res.write(`data: ${JSON.stringify({ type: 'progress', line: 'Starting backup...' })}\n\n`);
+
+  const outPath = `/tmp/hermes-backup-${Date.now()}.zip`;
+  // Use 'script' to fake a PTY — forces hermes CLI to line-buffer stdout
+  const proc = spawn('script', ['-qfc', `hermes backup -o ${outPath}`, '/dev/null'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, HERMES_HOME: path.join(os.homedir(), '.hermes'), TERM: 'dumb' },
+  });
+  let fullOutput = '';
+  proc.stdout.on('data', (chunk) => {
+    const text = stripAnsi(chunk.toString());
+    fullOutput += text;
+    text.split('\n').filter(l => l.trim()).forEach(line => {
+      res.write(`data: ${JSON.stringify({ type: 'progress', line: line.trim() })}\n\n`);
+    });
+  });
+  proc.stderr.on('data', (chunk) => {
+    const text = stripAnsi(chunk.toString());
+    fullOutput += text;
+    if (text.trim()) {
+      res.write(`data: ${JSON.stringify({ type: 'progress', line: text.trim() })}\n\n`);
+    }
+  });
+  proc.on('close', (code) => {
+    if (!fs.existsSync(outPath)) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: 'Backup file not created', output: fullOutput.trim() })}\n\n`);
+      return res.end();
     }
     const filename = 'hermes-backup-' + new Date().toISOString().slice(0, 10) + '.zip';
-    res.json({ ok: true, path: '/tmp/hermes-backup.zip', filename, output: output.trim() });
-  } catch (e) {
-    res.json({ ok: false, error: e.message });
-  }
+    audit(req.hciUser?.username || 'unknown', req.hciUser?.role || 'unknown', 'BACKUP_CREATE', outPath);
+    res.write(`data: ${JSON.stringify({ type: 'done', path: outPath, filename, output: fullOutput.trim() })}\n\n`);
+    res.end();
+  });
 });
 
 app.post('/api/backup/import', requireRole('admin'), (req, res) => {
-  // Inline multer for this route
   const multer = require('multer');
-  const upload = multer({ dest: '/tmp/', limits: { fileSize: 500 * 1024 * 1024 } });
-  upload.single('backup')(req, res, async (err) => {
-    if (err || !req.file) return res.json({ ok: false, error: err?.message || 'No file uploaded' });
-    try {
-      const zipPath = req.file.path;
-      const output = await new Promise((resolve, reject) => {
-        execFile('hermes', ['import', '--force', zipPath], { timeout: 60000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-          resolve(err ? (stdout || err.message) : stdout);
-        });
-      });
-      try { fs.unlinkSync(zipPath); } catch {}
-      if (output.includes('error') || output.includes('Error')) {
-        return res.json({ ok: false, error: output.trim() });
-      }
-      res.json({ ok: true, output: output.trim() });
-    } catch (e) {
-      res.json({ ok: false, error: e.message });
+  const upload = multer({ dest: '/tmp/', limits: { fileSize: 5 * 1024 * 1024 * 1024 } }); // 5GB
+  upload.single('backup')(req, res, (multerErr) => {
+    if (multerErr || !req.file) {
+      return res.json({ ok: false, error: multerErr?.message || 'No file uploaded' });
     }
+    const zipPath = req.file.path;
+    // SSE response — stream hermes import progress in real-time
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders();
+    res.write(`data: ${JSON.stringify({ type: 'progress', line: `File uploaded: ${req.file.originalname} (${(req.file.size / 1024 / 1024).toFixed(1)} MB)` })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'progress', line: 'Starting import...' })}\n\n`);
+
+    // Use 'script' to fake a PTY — forces hermes CLI to line-buffer stdout
+    const proc = spawn('script', ['-qfc', `hermes import ${zipPath} --force`, '/dev/null'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, HERMES_HOME: path.join(os.homedir(), '.hermes'), TERM: 'dumb' },
+    });
+    let fullOutput = '';
+    proc.stdout.on('data', (chunk) => {
+      const text = stripAnsi(chunk.toString());
+      fullOutput += text;
+      text.split('\n').filter(l => l.trim()).forEach(line => {
+        res.write(`data: ${JSON.stringify({ type: 'progress', line: line.trim() })}\n\n`);
+      });
+    });
+    proc.stderr.on('data', (chunk) => {
+      const text = stripAnsi(chunk.toString());
+      fullOutput += text;
+      if (text.trim()) {
+        res.write(`data: ${JSON.stringify({ type: 'progress', line: text.trim() })}\n\n`);
+      }
+    });
+    proc.on('close', (code) => {
+      try { fs.unlinkSync(zipPath); } catch {}
+      audit(req.hciUser?.username || 'unknown', req.hciUser?.role || 'unknown', 'BACKUP_IMPORT', req.file.originalname);
+      res.write(`data: ${JSON.stringify({ type: 'done', output: fullOutput.trim() })}\n\n`);
+      res.end();
+    });
   });
 });
 
@@ -2974,14 +3093,57 @@ app.get('/api/dump', requireRole('admin'), async (req, res) => {
 });
 
 // Update
-app.post('/api/update', requireRole('admin'), async (req, res) => {
-  try {
-    const output = await shell('hermes update --gateway 2>&1', '300s');
-    audit(req.hciUser?.username || 'unknown', req.hciUser?.role || 'unknown', 'HERMES_UPDATE', 'started');
-    res.json({ ok: true, output });
-  } catch (e) {
-    res.json({ ok: false, output: e.message });
-  }
+app.post('/api/update', requireRole('admin'), (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write(`data: ${JSON.stringify({ type: 'progress', line: 'Starting Hermes update...' })}\n\n`);
+  audit(req.hciUser?.username || 'unknown', req.hciUser?.role || 'unknown', 'HERMES_UPDATE', 'started');
+
+  // hermes update --gateway uses file-based IPC for prompts (not stdin!)
+  // It writes ~/.hermes/.update_prompt.json and waits for ~/.hermes/.update_response
+  const hermesHome = path.join(os.homedir(), '.hermes');
+  const promptPath = path.join(hermesHome, '.update_prompt.json');
+  const responsePath = path.join(hermesHome, '.update_response');
+
+  // Watch for prompt file and auto-answer "Y"
+  const answerInterval = setInterval(() => {
+    try {
+      if (require('fs').existsSync(promptPath)) {
+        require('fs').writeFileSync(responsePath, 'Y');
+      }
+    } catch {}
+  }, 500);
+
+  const proc = spawn('script', ['-qfc', 'hermes update --gateway', '/dev/null'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, HERMES_HOME: hermesHome, TERM: 'dumb' },
+  });
+  let fullOutput = '';
+  proc.stdout.on('data', (chunk) => {
+    const text = stripAnsi(chunk.toString());
+    fullOutput += text;
+    text.split('\n').filter(l => l.trim()).forEach(line => {
+      res.write(`data: ${JSON.stringify({ type: 'progress', line: line.trim() })}\n\n`);
+    });
+  });
+  proc.stderr.on('data', (chunk) => {
+    const text = stripAnsi(chunk.toString());
+    fullOutput += text;
+    if (text.trim()) res.write(`data: ${JSON.stringify({ type: 'progress', line: text.trim() })}\n\n`);
+  });
+  proc.on('close', (code) => {
+    clearInterval(answerInterval);
+    // Clean up IPC files
+    try { require('fs').unlinkSync(promptPath); } catch {}
+    try { require('fs').unlinkSync(responsePath); } catch {}
+    res.write(`data: ${JSON.stringify({ type: 'done', output: fullOutput.trim() })}\n\n`);
+    res.end();
+  });
 });
 
 // Backup — create and download zip
@@ -3005,12 +3167,12 @@ app.post('/api/backup', requireRole('admin'), async (req, res) => {
 // Import — upload and restore from zip
 app.post('/api/import', requireRole('admin'), (req, res) => {
   const multer = require('multer');
-  const upload = multer({ dest: '/tmp/', limits: { fileSize: 500 * 1024 * 1024 } }); // 500MB
+  const upload = multer({ dest: '/tmp/', limits: { fileSize: 5 * 1024 * 1024 * 1024 } }); // 5GB
   upload.single('backup')(req, res, async (err) => {
     if (err) return res.json({ ok: false, error: err.message });
     if (!req.file) return res.json({ ok: false, error: 'No file uploaded' });
     try {
-      const output = await shell(`hermes import ${req.file.path} --force 2>&1`, '120s');
+      const output = await shell(`hermes import ${req.file.path} --force 2>&1`, '300s');
       fs.unlink(req.file.path, () => {});
       audit(req.hciUser?.username || 'unknown', req.hciUser?.role || 'unknown', 'BACKUP_IMPORT', req.file.originalname);
       res.json({ ok: true, output });
@@ -3068,8 +3230,6 @@ app.get('/api/sessions/:id/export', requireAuth, async (req, res) => {
 });
 
 // Session messages — Phase 1: Message Viewer
-const Database = require('better-sqlite3');
-const STATE_DB_PATH = path.join(CONTROL_HOME, 'state.db');
 
 app.get('/api/sessions/:id/messages', requireAuth, (req, res) => {
   try {
