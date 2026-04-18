@@ -343,11 +343,15 @@ app.post('/api/gateway/responses', requireAuth, requirePerm('chat.use'), async (
   const { message, profile, session_id, model, stream = true } = req.body || {};
   if (!message || typeof message !== 'string') return res.status(400).json({ error: 'message required' });
 
+  console.log(`[GatewayChat] profile="${profile || 'default'}", available ports:`, gatewayPorts);
+
   try {
     const gatewayBase = getGatewayBase(profile || 'default');
     if (!gatewayBase) {
+      console.log(`[GatewayChat] No gateway for profile "${profile || 'default'}", falling back`);
       return res.status(503).json({ error: 'Gateway API not available for profile: ' + (profile || 'default') });
     }
+    console.log(`[GatewayChat] Routing to ${gatewayBase}/v1/responses`);
     const gatewayBody = {
       model: model || 'glm-5.1',
       input: message,
@@ -368,8 +372,11 @@ app.post('/api/gateway/responses', requireAuth, requirePerm('chat.use'), async (
       body: JSON.stringify(gatewayBody),
     });
 
+    console.log(`[GatewayChat] Response status: ${gatewayRes.status}`);
+
     if (!gatewayRes.ok) {
       const errText = await gatewayRes.text();
+      console.log(`[GatewayChat] Gateway error: ${errText}`);
       return res.status(gatewayRes.status).json({ error: `Gateway error: ${errText}` });
     }
 
