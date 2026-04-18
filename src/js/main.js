@@ -442,6 +442,50 @@ async function refreshChatSidebar() {
   } catch {}
 }
 
+// Reload current session messages from DB (silent — no loading indicator)
+async function reloadCurrentSessionMessages() {
+  const sessionId = state._currentChatSession;
+  if (!sessionId) return;
+  const profile = document.getElementById('chat-profile')?.value || 'default';
+  const container = document.getElementById('chat-messages');
+  const statsEl = document.getElementById('chat-status-session');
+  const tokensEl = document.getElementById('chat-status-tokens');
+  if (!container) return;
+  if (statsEl) statsEl.textContent = sessionId;
+
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages?profile=${encodeURIComponent(profile)}`, { credentials: 'include' });
+    if (!r.ok) return;
+    const data = await r.json();
+
+    // Token info
+    if (tokensEl && data.session) {
+      const tokens = (data.session.input_tokens || 0) + (data.session.output_tokens || 0);
+      tokensEl.textContent = tokens > 0 ? formatNumber(tokens) + ' tokens' : '';
+    }
+
+    // Model badge
+    const modelBadge = document.getElementById('chat-model-badge');
+    if (modelBadge && data.session?.model) {
+      const modelName = data.session.model.split('/').pop() || data.session.model;
+      modelBadge.textContent = modelName;
+      modelBadge.style.display = '';
+    } else if (modelBadge) {
+      modelBadge.style.display = 'none';
+    }
+
+    if (!data.messages || data.messages.length === 0) return;
+
+    // Rebuild messages cleanly
+    container.innerHTML = '';
+    for (const m of data.messages) {
+      container.appendChild(renderChatMessage(m));
+    }
+    highlightCodeBlocks(container);
+    container.scrollTop = container.scrollHeight;
+  } catch {}
+}
+
 async function loadChatSession(sessionId) {
   const profile = document.getElementById('chat-profile')?.value || 'default';
   const container = document.getElementById('chat-messages');
@@ -830,15 +874,16 @@ async function sendViaGatewayAPI(text, profile, sessionId, contentDiv, messagesD
 
   // Finalize — remove cursor, show elapsed
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  updateStreamContent(contentDiv, fullContent, toolCards, null, elapsed);
-  const stats = document.getElementById('chat-status-session');
   const elapsedEl = document.getElementById('chat-status-elapsed');
-  if (stats) stats.textContent = state._currentChatSession || '—';
   if (elapsedEl) elapsedEl.textContent = elapsed + 's';
   state._currentStreamReader = null;
-  // Remove any remaining cursors
-  contentDiv?.querySelectorAll('.chat-cursor').forEach(c => c.remove());
-  highlightCodeBlocks(contentDiv);
+
+  // Reload messages from DB to get clean, properly rendered messages
+  // (same as loading a session — ensures streaming view matches final view)
+  if (state._currentChatSession) {
+    await reloadCurrentSessionMessages();
+  }
+
   await refreshChatSidebar();
   updateChatHeader();
 }function handleGatewayEvent(evt, contentDiv, messagesDiv, toolCards) {
@@ -912,9 +957,14 @@ async function sendViaCLI(text, profile, sessionId, contentDiv, messagesDiv, sta
     }
   }
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  if (contentDiv) contentDiv.innerHTML = renderChatContent(fullContent) + '<div style="font-size:10px;color:var(--fg-subtle);margin-top:8px;">' + elapsed + 's</div>';
-  contentDiv?.querySelectorAll('.chat-cursor').forEach(c => c.remove());
-  highlightCodeBlocks(contentDiv);
+  const elapsedEl = document.getElementById('chat-status-elapsed');
+  if (elapsedEl) elapsedEl.textContent = elapsed + 's';
+
+  // Reload messages from DB to get clean, properly rendered messages
+  if (state._currentChatSession) {
+    await reloadCurrentSessionMessages();
+  }
+
   await refreshChatSidebar();
   updateChatHeader();
 }
