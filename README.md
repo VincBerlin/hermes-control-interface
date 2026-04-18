@@ -3,7 +3,7 @@
 A self-hosted web dashboard for the [Hermes AI agent](https://github.com/NousResearch/hermes-agent) stack. Manage terminals, files, sessions, cron jobs, token analytics, multi-agent gateways, and team access — all behind a password gate.
 
 **Stack:** Vanilla JS + Vite · Node.js · Express · WebSocket · xterm.js
-**Version:** 3.3.2
+**Version:** 3.3.3
 
 ---
 
@@ -513,6 +513,30 @@ If running via systemd, use `sudo systemctl restart hermes-control`.
 ---
 
 ## Changelog
+
+### v3.3.3 (2026-04-19)
+
+**🔒 Security (Critical + High):**
+- **Command injection fix:** Skills uninstall/update endpoints now use `execHermes()` + strict regex validation `^[\w.\-]+$` on skill names (prevents shell metacharacter injection)
+- **CSRF protection:** Added `requireCsrf` to 21 admin endpoints (user mgmt, config, keys, skills, HCI update/rollback/restart, backup, doctor, profile create/delete)
+- **Hardcoded API key removed:** Gateway API key now reads from `~/.hermes/config.yaml` dynamically (was hardcoded `'hci-gateway-2026'` in source)
+- **Dynamic CORS origins:** `cors_origins` no longer hardcoded to specific domains — supports `HCI_CORS_ORIGINS` env var, auto-detect from request origin, or localhost defaults
+- **Session rename:** Switched from `shell()` to `execHermes()` (defense-in-depth)
+
+**🧹 Maintenance:**
+- **Dead code cleanup:** ~270 lines removed across 6 files (unused functions, duplicate endpoints, redundant imports, duplicate CSS)
+- **18-item security audit report** added (SECURITY_AUDIT.md)
+
+**🐛 Bug Fixes:**
+- **Session list sorting:** Fixed sort order — backend now correctly sorts by last activity timestamp
+- **Delete session button:** Fixed operator precedence bug in `await showModal({...})?.action` that prevented delete API call
+- **Session list refresh:** Cache invalidated after rename and delete operations (stale 10s cache)
+- **Gateway session resume:** Gateway process restart fixed stale bytecode issue
+
+**🔌 Open-Source Ready:**
+- CORS origins: dynamic resolution (env var → auto-detect → localhost defaults)
+- Gateway API key: reads from config.yaml, env var override supported
+- `.env.example` updated with `GATEWAY_API_KEY` and `HCI_CORS_ORIGINS` docs
 
 ### v3.3.2 (2026-04-17)
 

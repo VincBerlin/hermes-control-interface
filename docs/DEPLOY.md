@@ -194,3 +194,26 @@ PORT=10272 npm start
 ```
 
 The `Secure` cookie flag will prevent login cookies from working over plain HTTP. To override this for local development, you would need to modify the `setAuthCookie` function — but do not do this in production.
+
+---
+
+## Environment Variables
+
+Copy `.env.example` to `.env` and configure:
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `HERMES_CONTROL_PASSWORD` | ✅ | — | Login password (min 32 chars in production) |
+| `HERMES_CONTROL_SECRET` | ✅ | — | HMAC secret for auth tokens |
+| `PORT` | — | `10272` | Server listen port |
+| `GATEWAY_API_KEY` | — | reads from `~/.hermes/config.yaml` | Gateway API auth key |
+| `HCI_CORS_ORIGINS` | — | auto-detect → localhost | Comma-separated CORS origins for production |
+| `HERMES_CONTROL_HOME` | — | `~/.hermes` | Hermes root directory |
+| `HERMES_PROJECTS_ROOT` | — | parent of repo | Projects explorer root |
+
+**Gateway API Key:** By default, reads from `~/.hermes/config.yaml` → `platforms.api_server.extra.key`. Only set `GATEWAY_API_KEY` if your key differs from config.
+
+**CORS Origins:** For localhost development, works out of the box (auto-detects from request origin). For production deployments:
+```bash
+HCI_CORS_ORIGINS=https://your-domain.com,https://staging.your-domain.com
+```

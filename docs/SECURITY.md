@@ -53,11 +53,12 @@ The server makes no outbound HTTP requests. It only:
 
 The `/ws` endpoint requires an authenticated session cookie. Unauthenticated WebSocket connections receive no data.
 
-## What This Is Not
+## Security Audit Status
 
-- **Not multi-user.** All browser sessions share the same password. Treat it like a root password.
-- **Not hardened for hostile networks.** Designed for trusted LANs or HTTPS-reverse-proxied deployments.
-- **Not audited.** This analysis is a surface-level review, not a formal security audit.
+- **Multi-user via RBAC v2.** 28 permissions, admin/viewer/custom roles.
+- **CSRF protection** on all state-changing admin endpoints.
+- **Security audit completed** (2026-04-19): 18 findings addressed — see `SECURITY_AUDIT.md` for full report.
+- **Command injection hardened:** All shell execution points use `execHermes()` (no shell interpretation) or strict input validation.
 
 ## Recommendations for Production
 
