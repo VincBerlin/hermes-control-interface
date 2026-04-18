@@ -2272,6 +2272,7 @@ async function loadAgentConfig(container, name) {
       { key: 'terminal', label: 'Terminal', icon: '💻' },
       { key: 'display', label: 'Display & Streaming', icon: '🖥' },
       { key: 'compression', label: 'Context & Compression', icon: '📦' },
+      { key: 'platforms', label: 'Platforms', icon: '🌐' },
       { key: 'mcp', label: 'MCP Servers', icon: '🔌' },
     ];
 
@@ -5126,6 +5127,108 @@ window.cancelEdit = function(type) {
   }
 };
 
+// Render Platforms tab — Gateway API config
+function renderPlatformsTab(contentEl, config, profile, isEditMode) {
+  const apiServer = config.platforms?.api_server || {};
+  const enabled = apiServer.enabled || false;
+  const extra = apiServer.extra || {};
+  const port = extra.port || '—';
+  const host = extra.host || '—';
+  const cors = extra.cors_origins || '—';
+  const keySet = extra.key ? '✅ Set' : '❌ Not set';
+
+  if (isEditMode) {
+    contentEl.innerHTML = `
+      <div class="card">
+        <div class="card-title">🌐 Platforms — Gateway API</div>
+        <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="cfg-platforms-enabled" ${enabled ? 'checked' : ''} style="width:16px;height:16px;accent-color:var(--gold);" />
+            <span style="font-size:13px;">Gateway API Enabled</span>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;">
+            <span style="font-size:12px;color:var(--fg-muted);">Host</span>
+            <input type="text" id="cfg-platforms-host" value="${escapeHtml(host)}" style="padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:13px;" />
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;">
+            <span style="font-size:12px;color:var(--fg-muted);">Port</span>
+            <input type="number" id="cfg-platforms-port" value="${port !== '—' ? port : ''}" style="padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:13px;" />
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;">
+            <span style="font-size:12px;color:var(--fg-muted);">API Key</span>
+            <input type="password" id="cfg-platforms-key" value="${escapeHtml(extra.key || '')}" style="padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:13px;" />
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;">
+            <span style="font-size:12px;color:var(--fg-muted);">CORS Origins (comma-separated)</span>
+            <input type="text" id="cfg-platforms-cors" value="${escapeHtml(cors !== '—' ? cors : '')}" style="padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:13px;" />
+          </label>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary" onclick="savePlatformsConfig('${escapeHtml(profile)}')">💾 Save</button>
+            <button class="btn" onclick="cancelEdit('platforms')">Cancel</button>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  // Read-only view
+  const statusColor = enabled ? 'var(--green)' : 'var(--red)';
+  const statusText = enabled ? 'Active' : 'Disabled';
+  contentEl.innerHTML = `
+    <div class="card">
+      <div class="card-title">🌐 Platforms — Gateway API</div>
+      <div class="stat-row">
+        <span class="stat-label">Status</span>
+        <span style="color:${statusColor};font-weight:600;">${statusText}</span>
+      </div>
+      ${enabled ? `
+      <div class="stat-row"><span class="stat-label">Host</span><span>${escapeHtml(host)}</span></div>
+      <div class="stat-row"><span class="stat-label">Port</span><span style="color:var(--gold);font-weight:600;">${port}</span></div>
+      <div class="stat-row"><span class="stat-label">API Key</span><span>${keySet}</span></div>
+      <div class="stat-row"><span class="stat-label">CORS</span><span style="font-size:11px;">${escapeHtml(cors)}</span></div>
+      ` : '<div class="stat-row"><span class="stat-label" style="color:var(--fg-muted);">Gateway API is not configured. Click Edit to enable.</span></div>'}
+      <div style="margin-top:12px;">
+        <button class="btn btn-primary" onclick="enableEdit('platforms')">✏️ Edit</button>
+      </div>
+    </div>
+  `;
+}
+
+window.savePlatformsConfig = async function(profile) {
+  const enabled = document.getElementById('cfg-platforms-enabled')?.checked;
+  const host = document.getElementById('cfg-platforms-host')?.value || '127.0.0.1';
+  const port = parseInt(document.getElementById('cfg-platforms-port')?.value || '8650');
+  const key = document.getElementById('cfg-platforms-key')?.value || '';
+  const cors = document.getElementById('cfg-platforms-cors')?.value || '';
+
+  const newConfig = JSON.parse(JSON.stringify(state._config.config));
+  newConfig.platforms = {
+    api_server: {
+      enabled,
+      extra: { host, port, key, cors_origins: cors },
+    },
+  };
+
+  try {
+    const csrfToken = state.csrfToken || '';
+    const res = await api('/api/config/' + encodeURIComponent(profile), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+      body: JSON.stringify({ config: newConfig }),
+    });
+    if (res.ok) {
+      showToast('Platforms config saved', 'success');
+      state._config.config = newConfig;
+      cancelEdit('platforms');
+    } else {
+      showToast(res.error || 'Save failed', 'error');
+    }
+  } catch (e) {
+    showToast('Save failed: ' + e.message, 'error');
+  }
+};
+
 // Render config category (form-based per-field editor)
 function renderConfigCategory(catKey) {
   const contentEl = document.getElementById('config-content');
@@ -5140,6 +5243,11 @@ function renderConfigCategory(catKey) {
 
   if (catKey === 'secrets') {
     loadSecretsTab(contentEl, profile, isEditMode);
+    return;
+  }
+
+  if (catKey === 'platforms') {
+    renderPlatformsTab(contentEl, config, profile, isEditMode);
     return;
   }
 

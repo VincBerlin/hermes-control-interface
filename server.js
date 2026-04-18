@@ -2729,23 +2729,30 @@ app.put('/api/config/:profile', requireAuth, requireRole('admin'), async (req, r
     const backupPath = `${configPath}.bak.${Date.now()}`;
     await shell(`cp "${configPath}" "${backupPath}" 2>/dev/null || true`);
 
-    // Auto-inject api_server for Gateway API chat (every save if missing)
+    // Auto-inject or fix api_server for Gateway API chat (every save)
     const jsYaml = require('js-yaml');
-    if (!newConfig.platforms?.api_server?.enabled) {
-      // Preserve existing port if config file already had api_server
-      let port = 8650;
-      try {
-        if (fs.existsSync(configPath)) {
-          const oldCfg = jsYaml.load(fs.readFileSync(configPath, 'utf8')) || {};
-          if (oldCfg.platforms?.api_server?.extra?.port) {
-            port = oldCfg.platforms.api_server.extra.port;
-          }
+    const existingPorts = discoverGatewayPorts(); // { profile: port, ... }
+    const myPort = existingPorts[profile]; // this profile's current port (from old config)
+
+    if (newConfig.platforms?.api_server?.enabled) {
+      // Config has api_server — check for port conflicts (clone issue)
+      const requestedPort = newConfig.platforms.api_server.extra?.port;
+      if (requestedPort) {
+        // Check if another profile is using this port
+        const conflict = Object.entries(existingPorts).find(([p, pt]) => p !== profile && pt === requestedPort);
+        if (conflict) {
+          // Port conflict — assign new unique port
+          let newPort = 8650;
+          while (Object.values(existingPorts).includes(newPort)) newPort++;
+          newConfig.platforms.api_server.extra.port = newPort;
+          console.log(`[ConfigSave] Port conflict: ${requestedPort} used by ${conflict[0]}, reassigned to ${newPort} for ${profile}`);
         }
-      } catch (_) {}
-      // If no existing port, find next available
-      if (port === 8650) {
-        const usedPorts = new Set(Object.values(discoverGatewayPorts()));
-        while (usedPorts.has(port)) port++;
+      }
+    } else {
+      // No api_server — inject from scratch
+      let port = myPort || 8650;
+      if (Object.values(existingPorts).includes(port) && !myPort) {
+        while (Object.values(existingPorts).includes(port)) port++;
       }
       newConfig.platforms = newConfig.platforms || {};
       newConfig.platforms.api_server = {
@@ -2758,15 +2765,15 @@ app.put('/api/config/:profile', requireAuth, requireRole('admin'), async (req, r
         },
       };
       console.log(`[ConfigSave] Auto-injected api_server on port ${port} for ${profile}`);
-      // Start gateway service if profile exists and service file exists
-      const svcFile = `/etc/systemd/system/hermes-gateway-${profile}.service`;
-      if (fs.existsSync(svcFile)) {
-        try { await shell(`systemctl daemon-reload && systemctl restart hermes-gateway-${profile} 2>&1`, '15s'); } catch {}
-      } else {
-        console.log(`[ConfigSave] No gateway service for ${profile}, skipping restart`);
-      }
-      gatewayPorts = discoverGatewayPorts();
     }
+    // Restart gateway service + refresh ports
+    const svcFile = `/etc/systemd/system/hermes-gateway-${profile}.service`;
+    if (fs.existsSync(svcFile)) {
+      try { await shell(`systemctl daemon-reload && systemctl restart hermes-gateway-${profile} 2>&1`, '15s'); } catch {}
+    } else {
+      console.log(`[ConfigSave] No gateway service for ${profile}, skipping restart`);
+    }
+    gatewayPorts = discoverGatewayPorts();
 
     // Convert to YAML with good formatting
     const yaml = require('yaml');
