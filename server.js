@@ -2722,13 +2722,24 @@ app.put('/api/config/:profile', requireAuth, requireRole('admin'), async (req, r
     const backupPath = `${configPath}.bak.${Date.now()}`;
     await shell(`cp "${configPath}" "${backupPath}" 2>/dev/null || true`);
 
-    // Auto-inject api_server for Gateway API chat (first-time config)
+    // Auto-inject api_server for Gateway API chat (every save if missing)
     const jsYaml = require('js-yaml');
-    const existingCfg = fs.existsSync(configPath) ? jsYaml.load(fs.readFileSync(configPath, 'utf8')) || {} : {};
-    if (!existingCfg.platforms?.api_server?.enabled && !newConfig.platforms?.api_server?.enabled) {
-      const usedPorts = new Set(Object.values(discoverGatewayPorts()));
+    if (!newConfig.platforms?.api_server?.enabled) {
+      // Preserve existing port if config file already had api_server
       let port = 8650;
-      while (usedPorts.has(port)) port++;
+      try {
+        if (fs.existsSync(configPath)) {
+          const oldCfg = jsYaml.load(fs.readFileSync(configPath, 'utf8')) || {};
+          if (oldCfg.platforms?.api_server?.extra?.port) {
+            port = oldCfg.platforms.api_server.extra.port;
+          }
+        }
+      } catch (_) {}
+      // If no existing port, find next available
+      if (port === 8650) {
+        const usedPorts = new Set(Object.values(discoverGatewayPorts()));
+        while (usedPorts.has(port)) port++;
+      }
       newConfig.platforms = newConfig.platforms || {};
       newConfig.platforms.api_server = {
         enabled: true,
