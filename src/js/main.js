@@ -490,6 +490,7 @@ async function loadChatSession(sessionId) {
     for (const m of data.messages) {
       container.appendChild(renderChatMessage(m));
     }
+    highlightCodeBlocks(container);
     container.scrollTop = container.scrollHeight;
   } catch (e) {
     container.innerHTML = '<div class="error-msg">' + escapeHtml(e.message) + '</div>';
@@ -834,6 +835,7 @@ async function sendViaGatewayAPI(text, profile, sessionId, contentDiv, messagesD
   state._currentStreamReader = null;
   // Remove any remaining cursors
   contentDiv?.querySelectorAll('.chat-cursor').forEach(c => c.remove());
+  highlightCodeBlocks(contentDiv);
   await refreshChatSidebar();
   updateChatHeader();
 }function handleGatewayEvent(evt, contentDiv, messagesDiv, toolCards) {
@@ -909,6 +911,7 @@ async function sendViaCLI(text, profile, sessionId, contentDiv, messagesDiv, sta
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   if (contentDiv) contentDiv.innerHTML = renderChatContent(fullContent) + '<div style="font-size:10px;color:var(--fg-subtle);margin-top:8px;">' + elapsed + 's</div>';
   contentDiv?.querySelectorAll('.chat-cursor').forEach(c => c.remove());
+  highlightCodeBlocks(contentDiv);
   await refreshChatSidebar();
   updateChatHeader();
 }
@@ -998,15 +1001,90 @@ function updateStreamContent(contentDiv, fullContent, toolCards, messagesDiv, el
 }
 
 function renderChatContent(text) {
-  // Simple markdown-like rendering: code blocks, bold, line breaks
+  if (!text) return '';
   let html = escapeHtml(toDisplayText(text));
-  // Code blocks ```...```
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre style="background:var(--bg-panel);padding:8px;border-radius:4px;overflow-x:auto;font-size:12px;margin:6px 0;"><code>$2</code></pre>');
+
+  // Code blocks ```lang ... ```
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (match, lang, code) => {
+    const langClass = lang ? `language-${lang}` : '';
+    const langLabel = lang ? `<span style="position:absolute;top:4px;left:10px;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-subtle);">${escapeHtml(lang)}</span>` : '';
+    return `<pre style="position:relative;">${langLabel}<button class="code-copy-btn" onclick="copyCodeBlock(this)">Copy</button><code class="${langClass}">${code.trim()}</code></pre>`;
+  });
+
   // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code style="background:var(--bg-panel);padding:1px 4px;border-radius:3px;font-size:12px;">$1</code>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
   // Bold
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+  // Italic
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Headers (### → h4, ## → h3, # → h2)
+  html = html.replace(/^### (.+)$/gm, '<h4 style="font-size:13px;font-weight:700;margin:10px 0 4px;color:var(--fg);">$1</h4>');
+  html = html.replace(/^## (.+)$/gm, '<h3 style="font-size:14px;font-weight:700;margin:12px 0 6px;color:var(--fg);">$1</h3>');
+  html = html.replace(/^# (.+)$/gm, '<h2 style="font-size:15px;font-weight:700;margin:14px 0 8px;color:var(--fg);">$1</h2>');
+
+  // Blockquotes
+  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // Unordered lists (- item)
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
+  // Fix nested <ul> wrapping
+  html = html.replace(/<\/ul>\s*<ul>/g, '');
+
+  // Ordered lists (1. item)
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+
+  // Links [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // Horizontal rules
+  html = html.replace(/^---$/gm, '<hr style="border:none;border-top:1px solid var(--border);margin:10px 0;">');
+
+  // Tables (basic support)
+  html = html.replace(/\|(.+)\|\n\|[-| ]+\|\n((?:\|.+\|\n?)+)/g, (match, headerRow, bodyRows) => {
+    const headers = headerRow.split('|').map(h => h.trim()).filter(Boolean);
+    const rows = bodyRows.trim().split('\n').map(row =>
+      row.split('|').map(c => c.trim()).filter(Boolean)
+    );
+    let table = '<table><thead><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
+    for (const row of rows) {
+      table += '<tr>' + row.map(c => `<td>${c}</td>`).join('') + '</tr>';
+    }
+    table += '</tbody></table>';
+    return table;
+  });
+
+  // Line breaks (preserve double newlines as paragraph breaks)
+  html = html.replace(/\n\n/g, '</p><p>');
+  html = html.replace(/\n/g, '<br>');
+  if (!html.startsWith('<')) html = '<p>' + html + '</p>';
+
   return html;
+}
+
+// Copy code block to clipboard
+window.copyCodeBlock = function(btn) {
+  const pre = btn.closest('pre');
+  const code = pre.querySelector('code');
+  const text = code.textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  }).catch(() => {
+    btn.textContent = 'Error';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  });
+};
+
+// Apply syntax highlighting after DOM insertion
+function highlightCodeBlocks(container) {
+  if (typeof hljs === 'undefined') return;
+  container.querySelectorAll('pre code:not(.hljs)').forEach(block => {
+    try { hljs.highlightElement(block); } catch {}
+  });
 }
 
 function createMessageDiv(role, content) {
