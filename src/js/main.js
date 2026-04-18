@@ -2265,7 +2265,10 @@ async function sseProgressModal(title, url, options = {}) {
   overlay.style.display = 'flex';
   overlay.innerHTML = `
     <div class="modal-card" style="width:520px;max-width:90vw;">
-      <div class="modal-title">${title}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div class="modal-title" style="margin:0;">${title}</div>
+        <button class="sse-modal-close" style="display:none;padding:4px 12px;font-size:11px;background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);color:var(--fg-muted);cursor:pointer;">✕ Close</button>
+      </div>
       <div class="sse-progress-log" style="margin:12px 0;font-family:var(--font-mono,monospace);font-size:12px;line-height:1.8;max-height:300px;overflow-y:auto;background:var(--bg-inset);border-radius:6px;padding:12px;color:var(--fg-muted);white-space:pre-wrap;"></div>
       <div class="sse-progress-status" style="font-size:11px;color:var(--fg-muted);">Starting...</div>
     </div>`;
@@ -2273,7 +2276,19 @@ async function sseProgressModal(title, url, options = {}) {
 
   const logEl = overlay.querySelector('.sse-progress-log');
   const statusEl = overlay.querySelector('.sse-progress-status');
+  const closeBtn = overlay.querySelector('.sse-modal-close');
   const addLine = (text) => { logEl.textContent += text + '\n'; logEl.scrollTop = logEl.scrollHeight; };
+
+  // Close button handler
+  closeBtn.onclick = () => overlay.remove();
+
+  // Safety timeout — auto-close after 120s even if no event received
+  const safetyTimeout = setTimeout(() => {
+    statusEl.textContent = '⚠ Timed out — closing';
+    statusEl.style.color = 'var(--amber)';
+    closeBtn.style.display = '';
+    setTimeout(() => overlay.remove(), 3000);
+  }, 120000);
 
   try {
     const fetchOpts = { method, headers, credentials: 'include' };
@@ -2335,12 +2350,16 @@ async function sseProgressModal(title, url, options = {}) {
               a.remove();
             }
             if (onSuccess) onSuccess(data);
+            clearTimeout(safetyTimeout);
+            closeBtn.style.display = '';
             setTimeout(() => overlay.remove(), autoCloseMs);
           } else if (data.type === 'error') {
             statusEl.textContent = '❌ ' + (data.message || 'Failed');
             statusEl.style.color = 'var(--danger)';
             if (data.output) addLine(data.output);
             if (onError) onError(data);
+            clearTimeout(safetyTimeout);
+            closeBtn.style.display = '';
             setTimeout(() => overlay.remove(), 5000);
           }
         } catch {}
@@ -2349,6 +2368,8 @@ async function sseProgressModal(title, url, options = {}) {
   } catch (e) {
     statusEl.textContent = '❌ Error: ' + e.message;
     statusEl.style.color = 'var(--danger)';
+    clearTimeout(safetyTimeout);
+    closeBtn.style.display = '';
     setTimeout(() => overlay.remove(), 3000);
   }
 }
@@ -3718,15 +3739,43 @@ async function runDoctor(fix = false) {
   el.innerHTML = '<div class="loading">Running diagnostics...</div>';
   try {
     const csrfToken = state.csrfToken || '';
-    const res = await api('/api/doctor', {
+    const response = await fetch('/api/doctor', {
       method: 'POST',
-      headers: { 'X-CSRF-Token': csrfToken },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+      credentials: 'include',
       body: JSON.stringify({ fix }),
     });
-    if (res.ok && res.output) {
-      el.innerHTML = renderDoctorOutput(res.output);
+    if (!response.ok) {
+      el.innerHTML = `<div class="error-msg">HTTP ${response.status}</div>`;
+      return;
+    }
+    // Read SSE stream
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullOutput = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n');
+      buffer = parts.pop() || '';
+      for (const line of parts) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.type === 'progress') {
+            fullOutput += data.line + '\n';
+          } else if (data.type === 'done') {
+            fullOutput = data.output || fullOutput;
+          }
+        } catch {}
+      }
+    }
+    if (fullOutput.trim()) {
+      el.innerHTML = renderDoctorOutput(fullOutput.trim());
     } else {
-      el.innerHTML = `<div class="error-msg">${escapeHtml(res.output || 'No output')}</div>`;
+      el.innerHTML = '<div class="error-msg">No output received</div>';
     }
   } catch (e) {
     el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
