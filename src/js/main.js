@@ -363,83 +363,95 @@ async function refreshChatSidebar() {
     const res = await fetch(`/api/all-sessions?profile=${encodeURIComponent(profile)}`, { credentials: 'include' });
     if (!res.ok) { listEl.innerHTML = '<div class="error-msg">Failed to load</div>'; return; }
     const data = await res.json();
-    const sessions = (data.sessions || []).filter(s => (s.messageCount > 0) || (s.message_count > 0) || (s.title && s.title !== '—'));
+    let sessions = (data.sessions || []).filter(s => (s.messageCount > 0) || (s.message_count > 0) || (s.title && s.title !== '—'));
 
     if (sessions.length === 0) {
-      listEl.innerHTML = '<div style="text-align:center;color:var(--fg-subtle);padding:20px;font-size:12px;">No conversations yet</div>';
+      listEl.innerHTML = '<div style="text-align:center;color:var(--fg-subtle);padding:20px;font-size:12px;\">No conversations yet</div>';
       return;
     }
 
-    // Detect source for each session
-    const sourceLabels = { telegram: '💬 Telegram', discord: '💜 Discord', slack: '🟡 Slack', cron: '⏰ Cron', web: '🌐 Web Chat', other: '📝 Other' };
-    const sourceIcons = { telegram: '💬', discord: '💜', slack: '🟡', cron: '⏰', web: '🌐', other: '📝' };
-    
-    function detectSource(s) {
-      const id = s.id || '';
-      if (id.startsWith('cron_')) return 'cron';
-      // Check if UUID format (Discord/Slack/Telegram sessions)
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(id);
-      if (isUuid) return 'web'; // Could be platform-specific, default to web
-      return 'other';
+    // Source labels for filter
+    const sourceLabels = { telegram: '💬 Telegram', discord: '💜 Discord', slack: '🟡 Slack', cron: '⏰ Cron', api_server: '🔌 API', cli: '⌨️ CLI', web: '🌐 Web', other: '📝 Other' };
+
+    // Parse lastActive string to seconds for sorting
+    function parseLastActive(str) {
+      if (!str) return 999999;
+      const match = str.match(/(\d+)\s*(m|h|d|s)/);
+      if (!match) return 999999;
+      const val = parseInt(match[1], 10);
+      const unit = match[2];
+      if (unit === 's') return val;
+      if (unit === 'm') return val * 60;
+      if (unit === 'h') return val * 3600;
+      if (unit === 'd') return val * 86400;
+      return 999999;
     }
 
-    // Group sessions by source
-    const groups = {};
-    sessions.forEach(s => {
-      const src = s.source || detectSource(s);
-      if (!groups[src]) groups[src] = [];
-      groups[src].push(s);
-    });
+    // Normalize source
+    function normalizeSource(s) {
+      const src = s.source;
+      if (!src) return 'other';
+      if (src === 'api_server') return 'api_server';
+      return src;
+    }
 
-    // Render grouped sessions
+    // Add normalized source to sessions
+    sessions = sessions.map(s => ({ ...s, _source: normalizeSource(s) }));
+
+    // Get unique sources for filter
+    const uniqueSources = [...new Set(sessions.map(s => s._source))].sort();
+
+    // Build filter HTML
+    const filterOptions = `<option value="all">All</option>` +
+      uniqueSources.map(src => `<option value="${src}">${sourceLabels[src] || src}</option>`).join('');
+
+    // Check active filter (persist in data attr)
+    const activeFilter = listEl.dataset.activeFilter || 'all';
+
+    // Render filter bar
+    let html = `<div class="chat-filter-bar">
+      <select id="chat-source-filter" class="chat-source-filter" onchange="filterChatBySource(this.value)">
+        ${filterOptions}
+      </select>
+    </div>`;
+
+    // Filter sessions
+    let filtered = activeFilter === 'all' ? sessions : sessions.filter(s => s._source === activeFilter);
+
+    // Sort by last activity (most recent first)
+    filtered.sort((a, b) => parseLastActive(a.lastActive) - parseLastActive(b.lastActive));
+
+    // Render flat list — no grouping
     const currentSid = state._currentChatSession;
-    let html = '';
-    const groupOrder = ['other', 'telegram', 'discord', 'slack', 'web', 'cron'];
-    
-    // Sort groups: put the one with most recent activity first
-    const sortedGroups = Object.entries(groups).sort((a, b) => {
-      const aIdx = groupOrder.indexOf(a[0]);
-      const bIdx = groupOrder.indexOf(b[0]);
-      return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
-    });
-
-    // If only one group with <=5 sessions, don't group — flat list
-    const showGroups = sortedGroups.length > 1 || (sortedGroups.length === 1 && sortedGroups[0][1].length > 5);
-
-    for (const [source, items] of sortedGroups) {
-      const label = sourceLabels[source] || source;
-      
-      if (showGroups) {
-        html += `<div class="chat-session-group" onclick="this.classList.toggle('collapsed'); this.nextElementSibling.classList.toggle('collapsed');">
-          <span class="group-chevron">▼</span>
-          <span>${label}</span>
-          <span style="margin-left:auto;font-size:9px;color:var(--fg-subtle);">${items.length}</span>
+    for (const s of filtered.slice(0, 100)) {
+      const title = toDisplayText((s.title && s.title !== '—') ? s.title : s.id);
+      const isActive = s.id == currentSid;
+      const msgs = s.messageCount || s.message_count || 0;
+      const model = s.model || '';
+      const modelTag = model ? `<span class="session-model-tag">${escapeHtml(model.split('/').pop())}</span>` : '';
+      const sourceIcon = { telegram: '💬', discord: '💜', slack: '🟡', cron: '⏰', api_server: '🔌', cli: '⌨️', web: '🌐', other: '📝' }[s._source] || '';
+      html += `<div class="chat-session-item ${isActive ? 'active' : ''}" data-sid="${s.id}" data-title="${escapeHtml(title)}" onclick="loadChatSession('${s.id}')">
+        <div class="chat-session-title">${sourceIcon} ${escapeHtml(title.substring(0, 40))}</div>
+        <div class="chat-session-meta">
+          <span>${msgs} msgs</span>
+          ${modelTag}
+          <span class="session-time">${s.lastActive || ''}</span>
         </div>
-        <div class="chat-session-group-items">`;
-      }
-
-      for (const s of items.slice(0, showGroups ? 50 : 50)) {
-        const title = toDisplayText((s.title && s.title !== '—') ? s.title : s.id);
-        const isActive = s.id == currentSid;
-        const msgs = s.messageCount || s.message_count || 0;
-        const model = s.model || '';
-        const modelTag = model ? `<span class="session-model-tag">${escapeHtml(model.split('/').pop())}</span>` : '';
-        html += `<div class="chat-session-item ${isActive ? 'active' : ''}" data-sid="${s.id}" data-title="${escapeHtml(title)}" onclick="loadChatSession('${s.id}')">
-          <div class="chat-session-title">${escapeHtml(title.substring(0, 45))}</div>
-          <div class="chat-session-meta">
-            <span>${msgs} msgs</span>
-            ${modelTag}
-          </div>
-        </div>`;
-      }
-
-      if (showGroups) {
-        html += '</div>';
-      }
+      </div>`;
     }
 
     listEl.innerHTML = html;
+
+    // Restore filter value
+    const filterEl = document.getElementById('chat-source-filter');
+    if (filterEl) filterEl.value = activeFilter;
   } catch {}
+}
+
+function filterChatBySource(value) {
+  const listEl = document.getElementById('chat-sidebar-list');
+  if (listEl) listEl.dataset.activeFilter = value;
+  refreshChatSidebar();
 }
 
 // Reload current session messages from DB (silent — no loading indicator)
@@ -502,6 +514,11 @@ async function loadChatSession(sessionId) {
   document.querySelectorAll('.chat-session-item').forEach(el => {
     el.classList.toggle('active', el.dataset.sid == sessionId);
   });
+
+  // Auto-hide sidebar on mobile after selecting session
+  if (window.innerWidth <= 768 && state.chatSidebarOpen) {
+    toggleChatSidebar();
+  }
 
   try {
     const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages?profile=${encodeURIComponent(profile)}`, { credentials: 'include' });
@@ -5494,6 +5511,7 @@ window.loadChatSession = loadChatSession;
 window.refreshChatSidebar = refreshChatSidebar;
 window.newChatSession = newChatSession;
 window.toggleChatSidebar = toggleChatSidebar;
+window.filterChatBySource = filterChatBySource;
 window.renameChatSession = renameChatSession;
 window.deleteChatSession = deleteChatSession;
 window.loadLogs = loadLogs;
