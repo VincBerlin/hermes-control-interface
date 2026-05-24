@@ -1738,15 +1738,35 @@ function finalizeWsChat() {
   // in case the final message hadn't been written to DB yet.
   if (state._currentChatSession) {
     reloadCurrentSessionMessages().then(() => {
-      // Merge captured streaming text if the last assistant message has no body
+      // Merge captured streaming text if the DB didn't persist the response in time.
+      // chat.done fires before Hermes writes to SQLite, so two cases arise:
+      //   1. DB wrote an empty assistant entry → fill its body
+      //   2. DB hasn't written the response yet → last element is the user message → append a new assistant bubble
       if (capturedText) {
         const messagesDiv = document.getElementById('chat-messages');
         if (messagesDiv) {
-          const lastMsg = messagesDiv.querySelector('.msg-assistant:last-child');
-          const lastBody = lastMsg?.querySelector('.msg-body');
-          if (lastBody && !lastBody.textContent?.trim()) {
+          const lastAssistant = messagesDiv.querySelector('.msg-assistant:last-child');
+          const lastBody = lastAssistant?.querySelector('.msg-body');
+          if (lastAssistant && lastBody && !lastBody.textContent?.trim()) {
+            // Case 1: empty assistant entry in DB
             lastBody.innerHTML = renderChatContent(capturedText.substring(0, 8000));
             highlightCodeBlocks(lastBody);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+          } else if (!lastAssistant) {
+            // Case 2: response not in DB yet — show captured streaming text as a placeholder bubble
+            const div = document.createElement('div');
+            div.className = 'chat-msg msg-assistant';
+            const header = document.createElement('div');
+            header.className = 'msg-header';
+            header.innerHTML = '<span class="msg-header-label">🤖 Assistant</span>';
+            const body = document.createElement('div');
+            body.className = 'msg-body';
+            body.innerHTML = renderChatContent(capturedText.substring(0, 8000));
+            div.appendChild(header);
+            div.appendChild(body);
+            messagesDiv.appendChild(div);
+            highlightCodeBlocks(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
           }
         }
       }
