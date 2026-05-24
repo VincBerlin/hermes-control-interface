@@ -863,7 +863,15 @@ function renderChatMessage(msg) {
     system: { label: 'System', icon: '⚙️', cls: 'msg-system' },
   };
   const c = labels[role] || labels.system;
-  const ts = msg.timestamp ? new Date(msg.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  // Include the date alongside the time so messages from older sessions are
+  // identifiable at a glance (the header used to show only HH:MM, which read
+  // as "today" regardless of the actual send date).
+  const ts = msg.timestamp
+    ? new Date(msg.timestamp * 1000).toLocaleString([], {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit',
+      })
+    : '';
 
   const div = document.createElement('div');
   div.className = `chat-msg ${c.cls}`;
@@ -3203,7 +3211,17 @@ async function toggleSessionDetail(btn, sessionId, profile) {
         system: { bg: 'rgba(156,163,175,0.08)', border: '#9ca3af' },
       };
       const rc = roleColors[m.role] || roleColors.system;
-      const ts = m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      // Hermes stores message.timestamp as Unix epoch *seconds* (matches
+      // renderChatMessage in the chat panel). Without *1000 every row
+      // rendered the same epoch-1970 time (~15:18 in CET) instead of the
+      // real send time. Also include the date so the panel is useful for
+      // sessions older than today.
+      const ts = m.timestamp
+        ? new Date(m.timestamp * 1000).toLocaleString([], {
+            year: 'numeric', month: 'short', day: 'numeric',
+            hour: '2-digit', minute: '2-digit',
+          })
+        : '';
       let content = toDisplayText(m.content);
       content = content.replace(/Resume this session with:.*$/gm, '');
       content = content.replace(/^Session:\s*\d+.*$/gm, '');

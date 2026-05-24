@@ -358,6 +358,9 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  /* Without an explicit gap, user bubbles (justify-content: flex-end) collapse
+     the label and the timestamp against each other, producing "You23:27". */
+  gap: 8px;
   margin-bottom: 4px;
   font-size: 9px;
   font-weight: 600;
